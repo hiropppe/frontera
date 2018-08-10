@@ -7,6 +7,7 @@ from frontera.contrib.backends.partitioners import Crc32NamePartitioner
 from frontera.utils.misc import chunks, get_crc32, time_elapsed
 from frontera.contrib.backends.remote.codecs.msgpack import Decoder, Encoder
 from frontera.contrib.backends.hbase.domaincache import DomainCache
+from frontera.contrib.backends.hbase.utils import connect
 
 from happybase import Connection
 from msgpack import Unpacker, Packer, packb
@@ -18,12 +19,17 @@ from cachetools import LRUCache
 from struct import pack, unpack
 from datetime import datetime
 from calendar import timegm
-from time import time
+from time import time, sleep
 from binascii import hexlify, unhexlify
 from io import BytesIO
 from random import choice
 from collections import defaultdict, Iterable
+from thriftpy.thrift import TException
 import logging
+import socket
+import sys
+import traceback
+
 
 _pack_functions = {
     'url': to_bytes,
@@ -85,11 +91,16 @@ class LRUCacheWithStats(LRUCache):
 class HBaseQueue(Queue):
     GET_RETRIES = 3
 
-    def __init__(self, connection, partitions, table_name, drop=False, use_snappy=False):
-        self.connection = connection
+    def __init__(self, host, port, namespace, partitions, table_name, drop=False, use_snappy=False, use_framed_compact=False):
+        self.logger = logging.getLogger("hbase.queue")
+        self._host = host
+        self._port = port
+        self._namespace = namespace
+        self._use_framed_compact = use_framed_compact
+        self.connection = connect(host, port, namespace, use_framed_compact=use_framed_compact)
+        self.logger.info("Connecting to %s:%d thrift server.", host, port)
         self.partitions = [i for i in range(0, partitions)]
         self.partitioner = Crc32NamePartitioner(self.partitions)
-        self.logger = logging.getLogger("hbase.queue")
         self.table_name = to_bytes(table_name)
 
         tables = set(self.connection.tables())
@@ -177,23 +188,37 @@ class HBaseQueue(Queue):
             rk = "%d_%s_%d" % (partition_id, "%0.2f_%0.2f" % get_interval(score, 0.01), random_str)
             data.setdefault(rk, []).append((score, item))
 
-        table = self.connection.table(self.table_name)
-        with table.batch(transaction=True) as b:
-            for rk, tuples in six.iteritems(data):
-                obj = dict()
-                for score, item in tuples:
-                    column = 'f:%0.3f_%0.3f' % get_interval(score, 0.001)
-                    obj.setdefault(column, []).append(item)
+        def batch_put(connection, table_name, data):
+            table = connection.table(table_name)
+            with table.batch(transaction=True) as b:
+                for rk, tuples in six.iteritems(data):
+                    obj = dict()
+                    for score, item in tuples:
+                        column = 'f:%0.3f_%0.3f' % get_interval(score, 0.001)
+                        obj.setdefault(column, []).append(item)
 
-                final = dict()
-                packer = Packer()
-                for column, items in six.iteritems(obj):
-                    stream = BytesIO()
-                    for item in items:
-                        stream.write(packer.pack(item))
-                    final[column] = stream.getvalue()
-                final[b'f:t'] = str(timestamp)
-                b.put(rk, final)
+                    final = dict()
+                    packer = Packer()
+                    for column, items in six.iteritems(obj):
+                        stream = BytesIO()
+                        for item in items:
+                            stream.write(packer.pack(item))
+                        final[column] = stream.getvalue()
+                    final[b'f:t'] = str(timestamp)
+                    b.put(rk, final)
+
+        try:
+            batch_put(self.connection, self.table_name, data)
+        except (TException, socket.error):
+            err, msg, _ = sys.exc_info()
+            self.logger.error("{} {}\n".format(err, msg))
+            self.logger.error(traceback.format_exc())
+            # reconnect
+            self.connection = connect(self._host, self._port, self._namespace, use_framed_compact=self._use_framed_compact)
+            self.logger.info("Reconnecting to %s:%d thrift server.", self._host, self._port)
+            sleep(.5)
+            # retry
+            batch_put(self.connection, self.table_name, data)
 
     def get_next_requests(self, max_n_requests, partition_id, **kwargs):
         """
@@ -211,100 +236,111 @@ class HBaseQueue(Queue):
         min_hosts = kwargs.pop('min_hosts', None)
         max_requests_per_host = kwargs.pop('max_requests_per_host', None)
         assert (max_n_requests > min_requests)
-        table = self.connection.table(self.table_name)
+        # TODO: Workaround. Connecting each time may avoid ProtocolError: No protocol version header
+        connection = connect(self._host, self._port, self._namespace, use_framed_compact=self._use_framed_compact)
+        try:
+            table = connection.table(self.table_name)
 
-        meta_map = {}
-        queue = {}
-        limit = min_requests
-        tries = 0
-        count = 0
-        prefix = to_bytes('%d_' % partition_id)
-        # now_ts = int(time())
-        # TODO: figure out how to use filter here, Thrift filter above causes full scan
-        # filter = "PrefixFilter ('%s') AND SingleColumnValueFilter ('f', 't', <=, 'binary:%d')" % (prefix, now_ts)
-        while tries < self.GET_RETRIES:
-            tries += 1
-            limit *= 5.5 if tries > 1 else 1.0
-            self.logger.debug("Try %d, limit %d, last attempt: requests %d, hosts %d",
-                              tries, limit, count, len(queue.keys()))
-            meta_map.clear()
-            queue.clear()
+            meta_map = {}
+            queue = {}
+            limit = min_requests
+            tries = 0
             count = 0
-            # XXX pypy hot-fix: non-exhausted generator must be closed manually
-            # otherwise "finally" piece in table.scan() method won't be executed
-            # immediately to properly close scanner (http://pypy.org/compat.html)
-            scan_gen = table.scan(limit=int(limit), batch_size=256, row_prefix=prefix, sorted_columns=True)
-            try:
-                for rk, data in scan_gen:
-                    for cq, buf in six.iteritems(data):
-                        if cq == b'f:t':
-                            continue
-                        stream = BytesIO(buf)
-                        unpacker = Unpacker(stream)
-                        for item in unpacker:
-                            fprint, key_crc32, _, _ = item
-                            if key_crc32 not in queue:
-                                queue[key_crc32] = []
-                            if max_requests_per_host is not None and len(queue[key_crc32]) > max_requests_per_host:
+            prefix = to_bytes('%d_' % partition_id)
+            # now_ts = int(time())
+            # TODO: figure out how to use filter here, Thrift filter above causes full scan
+            # filter = "PrefixFilter ('%s') AND SingleColumnValueFilter ('f', 't', <=, 'binary:%d')" % (prefix, now_ts)
+            while tries < self.GET_RETRIES:
+                tries += 1
+                limit *= 5.5 if tries > 1 else 1.0
+                self.logger.debug("Try %d, limit %d, last attempt: requests %d, hosts %d",
+                                  tries, limit, count, len(queue.keys()))
+                meta_map.clear()
+                queue.clear()
+                count = 0
+                # XXX pypy hot-fix: non-exhausted generator must be closed manually
+                # otherwise "finally" piece in table.scan() method won't be executed
+                # immediately to properly close scanner (http://pypy.org/compat.html)
+                scan_gen = table.scan(limit=int(limit), batch_size=256, row_prefix=prefix, sorted_columns=True)
+                try:
+                    for rk, data in scan_gen:
+                        for cq, buf in six.iteritems(data):
+                            if cq == b'f:t':
                                 continue
-                            queue[key_crc32].append(fprint)
-                            count += 1
+                            stream = BytesIO(buf)
+                            unpacker = Unpacker(stream)
+                            for item in unpacker:
+                                fprint, key_crc32, _, _ = item
+                                if key_crc32 not in queue:
+                                    queue[key_crc32] = []
+                                if max_requests_per_host is not None and len(queue[key_crc32]) > max_requests_per_host:
+                                    continue
+                                queue[key_crc32].append(fprint)
+                                count += 1
 
-                            if fprint not in meta_map:
-                                meta_map[fprint] = []
-                            meta_map[fprint].append((rk, item))
-                    if count > max_n_requests:
-                        break
-            finally:
-                scan_gen.close()
+                                if fprint not in meta_map:
+                                    meta_map[fprint] = []
+                                meta_map[fprint].append((rk, item))
+                        if count > max_n_requests:
+                            break
+                finally:
+                    scan_gen.close()
 
-            if min_hosts is not None and len(queue.keys()) < min_hosts:
-                continue
+                if min_hosts is not None and len(queue.keys()) < min_hosts:
+                    continue
 
-            if count < min_requests:
-                continue
-            break
+                if count < min_requests:
+                    continue
+                break
 
-        self.logger.debug("Finished: tries %d, hosts %d, requests %d", tries, len(queue.keys()), count)
+            self.logger.debug("Finished: tries %d, hosts %d, requests %d", tries, len(queue.keys()), count)
 
-        # For every fingerprint collect it's row keys and return all fingerprints from them
-        fprint_map = {}
-        for fprint, meta_list in six.iteritems(meta_map):
-            for rk, _ in meta_list:
-                fprint_map.setdefault(rk, []).append(fprint)
+            # For every fingerprint collect it's row keys and return all fingerprints from them
+            fprint_map = {}
+            for fprint, meta_list in six.iteritems(meta_map):
+                for rk, _ in meta_list:
+                    fprint_map.setdefault(rk, []).append(fprint)
 
-        results = []
-        trash_can = set()
+            results = []
+            trash_can = set()
 
-        for _, fprints in six.iteritems(queue):
-            for fprint in fprints:
-                for rk, _ in meta_map[fprint]:
-                    if rk in trash_can:
-                        continue
-                    for rk_fprint in fprint_map[rk]:
-                        _, item = meta_map[rk_fprint][0]
-                        _, _, encoded, score = item
-                        request = self.decoder.decode_request(encoded)
-                        request.meta[b'score'] = score
-                        results.append(request)
-                    trash_can.add(rk)
+            for _, fprints in six.iteritems(queue):
+                for fprint in fprints:
+                    for rk, _ in meta_map[fprint]:
+                        if rk in trash_can:
+                            continue
+                        for rk_fprint in fprint_map[rk]:
+                            _, item = meta_map[rk_fprint][0]
+                            _, _, encoded, score = item
+                            request = self.decoder.decode_request(encoded)
+                            request.meta[b'score'] = score
+                            results.append(request)
+                        trash_can.add(rk)
 
-        with table.batch(transaction=True) as b:
-            for rk in trash_can:
-                b.delete(rk)
-        self.logger.debug("%d row keys removed", len(trash_can))
-        return results
+            with table.batch(transaction=True) as b:
+                for rk in trash_can:
+                    b.delete(rk)
+            self.logger.debug("%d row keys removed", len(trash_can))
+            return results
+        finally:
+            connection.close()
 
     def count(self):
         raise NotImplementedError
 
 
 class HBaseState(States):
-    def __init__(self, connection, table_name, cache_size_limit,
-                 write_log_size, drop_all_tables):
-        self.connection = connection
-        self._table_name = to_bytes(table_name)
+    def __init__(self, host, port, namespace, table_name, cache_size_limit,
+                 write_log_size, drop_all_tables, use_framed_compact=False):
         self.logger = logging.getLogger("hbase.states")
+        self._host = host
+        self._port = port
+        self._namespace = namespace
+        self._use_framed_compact = use_framed_compact
+        self._write_log_size = write_log_size
+        self.connection = connect(host, port, namespace, use_framed_compact)
+        self.logger.info("Connecting to %s:%d thrift server.", host, port)
+        self._table_name = to_bytes(table_name)
         self._state_batch = self.connection.table(
             self._table_name).batch(batch_size=write_log_size)
         self._state_stats = defaultdict(int)
@@ -312,23 +348,23 @@ class HBaseState(States):
                                               stats=self._state_stats)
         self._state_last_updates = 0
 
-        tables = set(connection.tables())
+        tables = set(self.connection.tables())
         if drop_all_tables and self._table_name in tables:
-            connection.delete_table(self._table_name, disable=True)
+            self.connection.delete_table(self._table_name, disable=True)
             tables.remove(self._table_name)
 
         if self._table_name not in tables:
             schema = {'s': {'max_versions': 1, 'block_cache_enabled': 1,
                             'bloom_filter_type': 'ROW', 'in_memory': True, }
                       }
-            connection.create_table(self._table_name, schema)
+            self.connection.create_table(self._table_name, schema)
 
     def update_cache(self, objs):
         objs = objs if isinstance(objs, Iterable) else [objs]
         for obj in objs:
             fingerprint, state = obj.meta[b'fingerprint'], obj.meta[b'state']
             # prepare & write state change to happybase batch
-            self._state_batch.put(unhexlify(fingerprint), prepare_hbase_object(state=state))
+            self._op(self._state_batch.put, unhexlify(fingerprint), prepare_hbase_object(state=state))
             # update LRU cache with the state update
             self._state_cache[fingerprint] = state
             self._state_last_updates += 1
@@ -340,7 +376,7 @@ class HBaseState(States):
             obj.meta[b'state'] = self._state_cache.get(obj.meta[b'fingerprint'], States.DEFAULT)
 
     def flush(self):
-        self._state_batch.send()
+        self._op(self._state_batch.send)
 
     def fetch(self, fingerprints):
         to_fetch = [f for f in fingerprints if f not in self._state_cache]
@@ -350,14 +386,24 @@ class HBaseState(States):
             return
         self.logger.debug('Fetching %d/%d elements from HBase (cache size %d)',
                           len(to_fetch), len(fingerprints), len(self._state_cache))
-        for chunk in chunks(to_fetch, 65536):
-            keys = [unhexlify(fprint) for fprint in chunk]
-            table = self.connection.table(self._table_name)
-            records = table.rows(keys, columns=[b's:state'])
-            for key, cells in records:
-                if b's:state' in cells:
-                    state = unpack('>B', cells[b's:state'])[0]
-                    self._state_cache[hexlify(key)] = state
+        try:
+            for chunk in chunks(to_fetch, 65536):
+                keys = [unhexlify(fprint) for fprint in chunk]
+                table = self.connection.table(self._table_name)
+                records = table.rows(keys, columns=[b's:state'])
+                for key, cells in records:
+                    if b's:state' in cells:
+                        state = unpack('>B', cells[b's:state'])[0]
+                        self._state_cache[hexlify(key)] = state
+        except (TException, socket.error):
+            err, msg, _ = sys.exc_info()
+            self.logger.error("{} {}\n".format(err, msg))
+            self.logger.error(traceback.format_exc())
+            # reconnect
+            self.connection = connect(self._host, self._port, self._namespace, use_framed_compact=self._use_framed_compact)
+            self._state_batch = self.connection.table(
+                self._table_name).batch(batch_size=self._write_log_size)
+            self.logger.info("Reconnecting to %s:%d thrift server.", self._host, self._port)
 
     def _update_batch_stats(self):
         new_batches_count, self._state_last_updates = divmod(
@@ -377,10 +423,43 @@ class HBaseState(States):
         self._state_stats.clear()
         return stats
 
+    def _op(self, f, *args):
+        max_attempt = 10
+        attempt = self._attempt(10, f, *args)
+        # reconnect for non-transient error.
+        if attempt > max_attempt - 1:
+            self.connection = connect(self._host, self._port, self._namespace, use_framed_compact=self._use_framed_compact)
+            self._state_batch = self.connection.table(
+                self._table_name).batch(batch_size=self._write_log_size)
+            self.logger.info("Reconnecting to %s:%d thrift server.", self._host, self._port)
+            self._attempt(3, f, args)
+
+    def _attempt(self, max_attempt, f, *args):
+        attempt = 0
+        while attempt < max_attempt:
+            try:
+                f(*args)
+                break
+            except (TException, socket.error):
+                err, msg, _ = sys.exc_info()
+                self.logger.error("{} {}\n".format(err, msg))
+                self.logger.error(traceback.format_exc())
+                attempt += 1
+                sleep(.3)
+        return attempt
+
 
 class HBaseMetadata(Metadata):
-    def __init__(self, connection, table_name, drop_all_tables, use_snappy, batch_size, store_content):
+    def __init__(self, host, port, namespace, table_name,
+                 drop_all_tables, use_snappy, batch_size, store_content, use_framed_compact=False):
+        self.logger = logging.getLogger("hbase.metadata")
+        self._host = host
+        self._port = port
+        self._namespace = namespace
         self._table_name = to_bytes(table_name)
+        self._batch_size = batch_size
+        connection = connect(host, port, namespace, use_framed_compact=use_framed_compact)
+        self.logger.info("Connecting to %s:%d thrift server.", host, port)
         tables = set(connection.tables())
         if drop_all_tables and self._table_name in tables:
             connection.delete_table(self._table_name, disable=True)
@@ -405,7 +484,7 @@ class HBaseMetadata(Metadata):
         self.flush()
 
     def flush(self):
-        self.batch.send()
+        self._op(self.batch.send)
 
     def add_seeds(self, seeds):
         for seed in seeds:
@@ -413,7 +492,7 @@ class HBaseMetadata(Metadata):
                                        depth=0,
                                        created_at=utcnow_timestamp(),
                                        domain_fprint=seed.meta[b'domain'][b'fingerprint'])
-            self.batch.put(unhexlify(seed.meta[b'fingerprint']), obj)
+            self._op(self.batch.put, unhexlify(seed.meta[b'fingerprint']), obj)
 
     def page_crawled(self, response):
         headers = response.headers
@@ -424,11 +503,11 @@ class HBaseMetadata(Metadata):
                 obj = prepare_hbase_object(url=url,
                                            created_at=utcnow_timestamp(),
                                            dest_fprint=redirect_fprints[-1])
-                self.batch.put(fprint, obj)
+                self._op(self.batch.put, fprint, obj)
         obj = prepare_hbase_object(status_code=response.status_code, headers=headers,
                                    content=response.body) if self.store_content else \
             prepare_hbase_object(status_code=response.status_code, headers=headers)
-        self.batch.put(unhexlify(response.meta[b'fingerprint']), obj)
+        self._op(self.batch.put, unhexlify(response.meta[b'fingerprint']), obj)
 
     def links_extracted(self, request, links):
         links_dict = dict()
@@ -438,7 +517,7 @@ class HBaseMetadata(Metadata):
             obj = prepare_hbase_object(url=link_url,
                                        created_at=utcnow_timestamp(),
                                        domain_fprint=link_domain[b'fingerprint'])
-            self.batch.put(link_fingerprint, obj)
+            self._op(self.batch.put, link_fingerprint, obj)
 
     def request_error(self, request, error):
         obj = prepare_hbase_object(url=request.url,
@@ -446,13 +525,13 @@ class HBaseMetadata(Metadata):
                                    error=error,
                                    domain_fprint=request.meta[b'domain'][b'fingerprint'])
         rk = unhexlify(request.meta[b'fingerprint'])
-        self.batch.put(rk, obj)
+        self._op(self.batch.put, rk, obj)
         if b'redirect_urls' in request.meta:
             for url, fprint in zip(request.meta[b'redirect_urls'], request.meta[b'redirect_fingerprints']):
                 obj = prepare_hbase_object(url=url,
                                            created_at=utcnow_timestamp(),
                                            dest_fprint=request.meta[b'redirect_fingerprints'][-1])
-                self.batch.put(fprint, obj)
+                self._op(self.batch.put, fprint, obj)
 
     def update_score(self, batch):
         if not isinstance(batch, dict):
@@ -460,7 +539,31 @@ class HBaseMetadata(Metadata):
         for fprint, (score, url, schedule) in six.iteritems(batch):
             obj = prepare_hbase_object(score=score)
             rk = unhexlify(fprint)
-            self.batch.put(rk, obj)
+            self._op(self.batch.put, rk, obj)
+
+    def _op(self, f, *args):
+        max_attempt = 10
+        attempt = self._attempt(10, f, *args)
+        # reconnect for non-transient error.
+        if attempt > max_attempt - 1:
+            connection = connect(self._host, self._port, self._namespace, use_framed_compact=self._use_framed_compact)
+            table = connection.table(self._table_name)
+            self.batch = table.batch(batch_size=self._batch_size)
+            self._attempt(3, f, args)
+
+    def _attempt(self, max_attempt, f, *args):
+        attempt = 0
+        while attempt < max_attempt:
+            try:
+                f(*args)
+                break
+            except (TException, socket.error):
+                err, msg, _ = sys.exc_info()
+                self.logger.error("{} {}\n".format(err, msg))
+                self.logger.error(traceback.format_exc())
+                attempt += 1
+                sleep(.3)
+        return attempt
 
 
 class HBaseBackend(DistributedBackend):
@@ -470,57 +573,50 @@ class HBaseBackend(DistributedBackend):
         self.manager = manager
         self.logger = logging.getLogger("hbase.backend")
         settings = manager.settings
-        port = settings.get('HBASE_THRIFT_PORT')
+        self.port = int(settings.get('HBASE_THRIFT_PORT'))
         hosts = settings.get('HBASE_THRIFT_HOST')
-        namespace = settings.get('HBASE_NAMESPACE')
+        self.namespace = settings.get('HBASE_NAMESPACE')
         self._min_requests = settings.get('BC_MIN_REQUESTS')
         self._min_hosts = settings.get('BC_MIN_HOSTS')
         self._max_requests_per_host = settings.get('BC_MAX_REQUESTS_PER_HOST')
 
         self.queue_partitions = settings.get('SPIDER_FEED_PARTITIONS')
-        host = choice(hosts) if type(hosts) in [list, tuple] else hosts
-        kwargs = {
-            'host': host,
-            'port': int(port),
-            'table_prefix': namespace,
-            'table_prefix_separator': ':',
-            'timeout': 60000
-        }
-        if settings.get('HBASE_USE_FRAMED_COMPACT'):
-            kwargs.update({
-                'protocol': 'compact',
-                'transport': 'framed'
-            })
-        self.logger.info("Connecting to %s:%d thrift server.", host, port)
-        self.connection = Connection(**kwargs)
+        self.host = choice(hosts) if type(hosts) in [list, tuple] else hosts
         self._metadata = None
         self._queue = None
         self._states = None
         self._domain_metadata = None
 
     def _init_states(self, settings):
-        self._states = HBaseState(connection=self.connection,
-                                  table_name=settings.get('HBASE_STATES_TABLE'),
+        self._states = HBaseState(self.host, self.port, self.namespace,
+                                  settings.get('HBASE_STATES_TABLE'),
                                   cache_size_limit=settings.get('HBASE_STATE_CACHE_SIZE_LIMIT'),
                                   write_log_size=settings.get('HBASE_STATE_WRITE_LOG_SIZE'),
-                                  drop_all_tables=settings.get('HBASE_DROP_ALL_TABLES'))
+                                  drop_all_tables=settings.get('HBASE_DROP_ALL_TABLES'),
+                                  use_framed_compact=settings.get('HBASE_USE_FRAMED_COMPACT'))
 
     def _init_queue(self, settings):
-        self._queue = HBaseQueue(self.connection, self.queue_partitions,
-                                 settings.get('HBASE_QUEUE_TABLE'), drop=settings.get('HBASE_DROP_ALL_TABLES'),
-                                 use_snappy=settings.get('HBASE_USE_SNAPPY'))
+        self._queue = HBaseQueue(self.host, self.port, self.namespace, self.queue_partitions,
+                                 settings.get('HBASE_QUEUE_TABLE'),
+                                 drop=settings.get('HBASE_DROP_ALL_TABLES'),
+                                 use_snappy=settings.get('HBASE_USE_SNAPPY'),
+                                 use_framed_compact=settings.get('HBASE_USE_FRAMED_COMPACT'))
 
     def _init_metadata(self, settings):
-        self._metadata = HBaseMetadata(self.connection, settings.get('HBASE_METADATA_TABLE'),
+        self._metadata = HBaseMetadata(self.host, self.port, self.namespace,
+                                       settings.get('HBASE_METADATA_TABLE'),
                                        settings.get('HBASE_DROP_ALL_TABLES'),
                                        settings.get('HBASE_USE_SNAPPY'),
                                        settings.get('HBASE_BATCH_SIZE'),
-                                       settings.get('STORE_CONTENT'))
+                                       settings.get('STORE_CONTENT'),
+                                       use_framed_compact=settings.get('HBASE_USE_FRAMED_COMPACT'))
 
     def _init_domain_metadata(self, settings):
-        self._domain_metadata = DomainCache(settings.get('HBASE_DOMAIN_METADATA_CACHE_SIZE'), self.connection,
+        self._domain_metadata = DomainCache(self.host, self.port, self.namespace,
+                                            settings.get('HBASE_DOMAIN_METADATA_CACHE_SIZE'),
                                             settings.get('HBASE_DOMAIN_METADATA_TABLE'),
-                                            batch_size=settings.get('HBASE_DOMAIN_METADATA_BATCH_SIZE'))
+                                            batch_size=settings.get('HBASE_DOMAIN_METADATA_BATCH_SIZE'),
+                                            use_framed_compact=settings.get('HBASE_USE_FRAMED_COMPACT'))
 
     @classmethod
     def strategy_worker(cls, manager):
@@ -561,14 +657,13 @@ class HBaseBackend(DistributedBackend):
 
     def frontier_start(self):
         for component in [self.metadata, self.queue, self.states, self.domain_metadata]:
-            if component:
+            if component is not None:
                 component.frontier_start()
 
     def frontier_stop(self):
         for component in [self.metadata, self.queue, self.states, self.domain_metadata]:
-            if component:
+            if component is not None:
                 component.frontier_stop()
-        self.connection.close()
 
     def add_seeds(self, seeds):
         self.metadata.add_seeds(seeds)
@@ -604,8 +699,9 @@ class HBaseBackend(DistributedBackend):
         For now it provides only HBase client stats.
         """
         stats = {}
-        with time_elapsed('Call HBase backend get_stats()'):
-            stats.update(self.connection.client.get_stats())
+        # No workaround fround. Seems to be missing Thrift I/F.
+        # with time_elapsed('Call HBase backend get_stats()'):
+        #     stats.update(self.connection.client.get_stats())
         if self._states:
             stats.update(self._states.get_stats())
         return stats

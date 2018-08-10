@@ -1,8 +1,24 @@
 from __future__ import absolute_import
 from happybase import Batch
+from happybase import Connection
 
 from thriftpy.transport import TTransportException
 import logging
+
+
+def connect(host, port, namespace, use_framed_compact=False):
+    kwargs = {
+        'host': host,
+        'port': port,
+        'table_prefix': namespace,
+        'table_prefix_separator': ':'
+    }
+    if use_framed_compact:
+        kwargs.update({
+            'protocol': 'compact',
+            'transport': 'framed'
+        })
+    return Connection(**kwargs)
 
 
 class HardenedBatch(Batch):

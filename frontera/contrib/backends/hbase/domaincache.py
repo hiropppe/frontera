@@ -9,6 +9,7 @@ from msgpack import packb, unpackb
 from w3lib.util import to_bytes, to_native_str
 
 from frontera.core.components import DomainMetadata
+from frontera.contrib.backends.hbase.utils import connect
 from frontera.contrib.backends.hbase.utils import HardenedBatch
 from frontera.utils.msgpack import restruct_for_pack
 
@@ -85,11 +86,12 @@ class DomainCache(LRUCache, DomainMetadata):
     MAX_VALUE_SIZE = int(DEFAULT_HBASE_THRIFT_FRAME_SIZE * 0.95)
     LOG_INTERVAL = 60.0
 
-    def __init__(self, maxsize, connection, table_name, set_fields=None, on_get_func=None, batch_size=100):
+    def __init__(self, host, port, namespace, maxsize, table_name, set_fields=None, on_get_func=None, batch_size=100, use_framed_compact=False):
         super(DomainCache, self).__init__(maxsize)
 
         self._second_gen = dict()
 
+        connection = connect(host, port, namespace, use_framed_compact=use_framed_compact)
         table_name = to_bytes(table_name)
         self._table = self._get_domain_table(connection, table_name)
         self._batch = HardenedBatch(self._table, batch_size=batch_size)
