@@ -84,6 +84,8 @@ class Metadata(BaseMetadata):
             db_page.method = to_native_str(obj.request.method)
             db_page.cookies = obj.request.cookies
             db_page.status_code = obj.status_code
+            if b'depth' in obj.meta:
+                db_page.depth = obj.meta[b'depth']
         return db_page
 
     def _create_page(self, obj):
@@ -92,7 +94,10 @@ class Metadata(BaseMetadata):
         db_page.url = obj.url
         db_page.created_at = datetime.utcnow()
         db_page.meta = obj.meta
-        db_page.depth = 0
+        if b'depth' in obj.meta:
+            db_page.depth = obj.meta[b'depth']
+        else:
+            db_page.depth = 0
 
         if isinstance(obj, Request):
             db_page.headers = obj.headers

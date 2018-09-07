@@ -494,6 +494,17 @@ class LocalFrontierManager(BaseContext, StrategyComponentsPipelineMixin, BaseMan
         self._check_startstop()
         self.strategy.read_seeds(seeds_file)
 
+    def add_seeds_dict(self, seeds):
+        """
+        Performs seeds addition procedure. Using json string, calls read_seeds method of crawling strategy.
+
+        :param dict seeds: A dict which will be passed to read_seeds
+
+        :return: None.
+        """
+        self._check_startstop()
+        self.strategy.read_seeds_dict(seeds)
+
     def get_next_requests(self, max_next_requests=0, **kwargs):
         """
         Returns a list of next requests to be crawled. Optionally a maximum number of pages can be passed. If no

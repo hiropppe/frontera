@@ -48,6 +48,14 @@ class BaseCrawlingStrategy(object):
         """
 
     @abstractmethod
+    def read_seeds_dict(self, seeds):
+        """
+        Called when :term:`strategy worker` is run using add-seeds mode.
+
+        :param dict seeds: A dict containing seed content
+        """
+
+    @abstractmethod
     def page_crawled(self, response):
         """
         Called every time document was successfully crawled, and receiving page_crawled event from spider log.

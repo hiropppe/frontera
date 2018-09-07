@@ -1,9 +1,12 @@
 # -*- coding: utf-8 -*-
+import json
+import logging
+
+from argparse import ArgumentParser
 from frontera.core.manager import LocalFrontierManager
 from frontera.settings import Settings
 from frontera.logger.handlers import CONSOLE
-from argparse import ArgumentParser
-import logging
+from json import JSONDecodeError
 from logging.config import fileConfig
 from os.path import exists
 
@@ -12,12 +15,16 @@ logger = logging.getLogger(__name__)
 
 
 def run_add_seeds(settings, seeds_file):
-    fh = open(seeds_file, "rb")
-
     logger.info("Starting local seeds addition from file %s", seeds_file)
 
     manager = LocalFrontierManager.from_settings(settings)
-    manager.add_seeds(fh)
+    try:
+        seeds = json.loads(open(seeds_file, "r").read())
+        manager.add_seeds_dict(seeds)
+    except json.JSONDecodeError:
+        fh = open(seeds_file, "rb")
+        manager.add_seeds(fh)
+
     manager.stop()
     manager.close()
 

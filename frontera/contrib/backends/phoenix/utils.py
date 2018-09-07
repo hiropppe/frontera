@@ -5,20 +5,16 @@ from happybase import Connection
 from thriftpy.transport import TTransportException
 import logging
 
+import phoenixdb
 
-def connect(host, port, namespace, use_framed_compact=False):
-    kwargs = {
-        'host': host,
-        'port': port,
-        'table_prefix': namespace,
-        'table_prefix_separator': ':'
-    }
-    if use_framed_compact:
-        kwargs.update({
-            'protocol': 'compact',
-            'transport': 'framed'
-        })
-    return Connection(**kwargs)
+
+def connect(host, port, schema=None, max_retries=2, autocommit=True):
+    url = 'http://{:s}:{:d}'.format(host, port)
+    conn = phoenixdb.connect(url, max_retries=max_retries, autocommit=autocommit)
+    cursor = conn.cursor()
+    if schema:
+        cursor.execute('USE ' + schema)
+    return conn
 
 
 class HardenedBatch(Batch):

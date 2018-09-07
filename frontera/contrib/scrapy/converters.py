@@ -1,7 +1,7 @@
 from __future__ import absolute_import
 from scrapy.http.request import Request as ScrapyRequest
 from scrapy.http.response import Response as ScrapyResponse
-from scrapy.http.response.html import TextResponse
+from scrapy.http.response.html import TextResponse, HtmlResponse
 
 from frontera.core.models import Request as FrontierRequest
 from frontera.core.models import Response as FrontierResponse
@@ -11,6 +11,7 @@ from w3lib.util import to_bytes, to_native_str
 
 class RequestConverter(BaseRequestConverter):
     """Converts between frontera and Scrapy request objects"""
+
     def __init__(self, spider):
         self.spider = spider
 
@@ -74,6 +75,7 @@ class RequestConverter(BaseRequestConverter):
 
 class ResponseConverter(BaseResponseConverter):
     """Converts between frontera and Scrapy response objects"""
+
     def __init__(self, spider, request_converter):
         self.spider = spider
         self._request_converter = request_converter
@@ -82,10 +84,17 @@ class ResponseConverter(BaseResponseConverter):
         """response: Scrapy > Frontier"""
         frontier_request = scrapy_response.meta[b'frontier_request']
         frontier_request.meta[b'scrapy_meta'] = scrapy_response.meta
+        if (b'frontier_request' in scrapy_response.meta and
+                b'depth' in scrapy_response.meta[b'frontier_request'].meta):
+            frontier_request.meta[b'depth'] = scrapy_response.meta[b'frontier_request'].meta[b'depth']
+        elif 'depth' in scrapy_response.meta:
+            frontier_request.meta[b'depth'] = scrapy_response.meta['depth']
         if 'redirect_urls' in scrapy_response.meta:
             frontier_request.meta[b'redirect_urls'] = scrapy_response.meta['redirect_urls']
         if isinstance(scrapy_response, TextResponse):
             frontier_request.meta[b'encoding'] = scrapy_response.encoding
+        if isinstance(scrapy_response, HtmlResponse):
+            frontier_request.meta[b'title'] = scrapy_response.xpath('//title/text()').extract_first()
         del scrapy_response.meta[b'frontier_request']
         return FrontierResponse(url=scrapy_response.url,
                                 status_code=scrapy_response.status,
