@@ -11,7 +11,7 @@ import sys
 import traceback
 
 from frontera import DistributedBackend
-from frontera.core.components import Metadata, Queue, States
+from frontera.core.components import Metadata, Queue, States, Seed
 from frontera.core.models import Request
 from frontera.contrib.backends.partitioners import Crc32NamePartitioner
 from frontera.utils.fingerprint import hostname_local_fingerprint
@@ -458,18 +458,23 @@ class PhoenixMetadata(Metadata):
             CREATE TABLE {table} (
                 URL_FPRINT VARCHAR(40) PRIMARY KEY,
                 "m:url" VARCHAR,
-                "m:created_at" UNSIGNED_LONG,
-                "m:status_code" UNSIGNED_SMALLINT,
-                "m:content_type" VARCHAR,
-                "m:error" VARCHAR,
-                "m:domain_fprint" VARCHAR(40),
-                "m:dest_fprint" VARCHAR(40),
-                "m:headers" BINARY(10240),
-                "m:score" UNSIGNED_FLOAT,
                 "m:normed_url" VARCHAR,
+                "m:domain" VARCHAR,
+                "m:netloc" VARCHAR,
                 "m:normed_url_fprint" VARCHAR(40),
+                "m:domain_fprint" VARCHAR(40),
+                "m:netloc_fprint" VARCHAR(40),
+                "m:dest_fprint" VARCHAR(40),
+                "m:seed_fprint" VARCHAR(40),
+                "m:title" VARCHAR,
+                "m:content_type" VARCHAR,
+                "m:headers" BINARY(10240),
+                "m:status_code" UNSIGNED_SMALLINT,
                 "m:signature" VARCHAR(40),
-                "c:title" VARCHAR,
+                "m:depth" UNSIGNED_SMALLINT,
+                "m:score" UNSIGNED_FLOAT,
+                "m:error" VARCHAR,
+                "m:created_at" UNSIGNED_LONG,
                 "c:content" VARCHAR
             ) DATA_BLOCK_ENCODING='{data_block_encoding}', VERSIONS={versions}
         """.format(table=self._table_name,
@@ -477,10 +482,16 @@ class PhoenixMetadata(Metadata):
                    versions=1)
 
         self.SQL_ADD_SEED = """
-            UPSERT INTO {table}
-                (URL_FPRINT, "m:url", "m:created_at", "m:domain_fprint")
+            UPSERT INTO {table} (
+                URL_FPRINT,
+                "m:url",
+                "m:domain",
+                "m:netloc",
+                "m:created_at",
+                "m:domain_fprint",
+                "m:netloc_fprint")
             VALUES
-                (?, ?, ?, ?)
+                (?, ?, ?, ?, ?, ?, ?)
         """.format(table=self._table_name)
 
         self.SQL_ADD_REDIRECT = """
@@ -491,10 +502,20 @@ class PhoenixMetadata(Metadata):
         """.format(table=self._table_name)
 
         self.SQL_PAGE_CRAWLED = """
-            UPSERT INTO {table}
-                (url_fprint, "m:status_code", "m:content_type", "m:headers", "m:signature", "m:normed_url", "m:normed_url_fprint", "c:title", "c:content")
+            UPSERT INTO {table} (
+                 url_fprint,
+                 "m:status_code",
+                 "m:content_type",
+                 "m:headers",
+                 "m:signature",
+                 "m:normed_url",
+                 "m:normed_url_fprint",
+                 "m:title",
+                 "m:seed_fprint",
+                 "m:depth",
+                 "c:content")
             VALUES
-                (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """.format(table=self._table_name)
 
         self.SQL_REQUEST_ERROR = """
@@ -544,8 +565,14 @@ class PhoenixMetadata(Metadata):
             self.cursor.execute(self.SQL_ADD_SEED,
                                 (seed.meta[b'fingerprint'],
                                  seed.url,
+                                 seed.meta[b'domain'][b'name'],
+                                 seed.meta[b'domain'][b'netloc'],
                                  int(time()),
-                                 seed.meta[b'domain'][b'fingerprint']))
+                                 seed.meta[b'domain'][b'fingerprint'],
+                                 seed.meta[b'domain'][b'netloc_fingerprint'],
+                                 seed.meta[b'fingerprint'],
+                                 seed.meta[b'depth']
+                                 ))
 
     def page_crawled(self, response):
         headers = response.headers
@@ -574,6 +601,8 @@ class PhoenixMetadata(Metadata):
                              normed_url,
                              normed_url_fprint,
                              title,
+                             response.meta[b'seed_fingerprint'],
+                             response.meta[b'depth'],
                              response.body))
 
     def links_extracted(self, request, links):
@@ -584,8 +613,13 @@ class PhoenixMetadata(Metadata):
             self.cursor.execute(self.SQL_ADD_SEED,
                                 (link_fingerprint,
                                  link_url,
+                                 link_domain[b'name'],
+                                 link_domain[b'netloc'],
                                  int(time()),
-                                 link_domain[b'fingerprint']))
+                                 link_domain[b'fingerprint'],
+                                 link_domain[b'netloc_fingerprint'],
+                                 link.meta.get(b'seed_fingerprint', None),
+                                 link.meta.get(b'depth', None)))
 
     def request_error(self, request, error):
         self.cursor.execute(self.SQL_REQUEST_ERROR,
@@ -616,6 +650,114 @@ class PhoenixMetadata(Metadata):
         return to_bytes(hashlib.md5(body).hexdigest())
 
 
+class PhoenixSeed(Seed):
+
+    def __init__(self, host, port, schema, seed_partitions, table_name,
+                 drop_all_tables=False, data_block_encoding='DIFF'):
+
+        self.logger = logging.getLogger("phoenix.seed")
+        self._host = host
+        self._port = port
+        self._schema = schema.upper()
+        self._table_name = table_name.upper()
+        self._DDL = """
+            CREATE TABLE {table} (
+                URL_FPRINT VARCHAR(40) PRIMARY KEY,
+                "s:description" VARCHAR(255),
+                "s:url" VARCHAR,
+                "s:domain" VARCHAR,
+                "s:netloc" VARCHAR,
+                "s:strategy" VARCHAR(30),
+                "s:depth_limit" UNSIGNED_SMALLINT,
+                "s:partition_id" UNSIGNED_TINYINT,
+                "s:created_at" UNSIGNED_LONG
+            ) DATA_BLOCK_ENCODING='{data_block_encoding}', VERSIONS={versions}
+        """.format(table=self._table_name,
+                   data_block_encoding=data_block_encoding,
+                   versions=1)
+
+        self._SQL_ADD_SEED = """
+            UPSERT INTO {table}
+                (url_fprint, "s:description", "s:url", "s:domain", "s:netloc", "s:strategy", "s:depth_limit", "s:partition_id", "s:created_at")
+            VALUES
+                (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """.format(table=self._table_name)
+
+        self.seed_partitions = [i for i in range(0, seed_partitions)]
+        self.seed_partitioner = Crc32NamePartitioner(self.seed_partitions)
+
+        self.conn = connect(self._host, self._port, self._schema)
+        self.cursor = self.conn.cursor()
+        self.logger.info("Connecting to %s:%d phoenix query server.", self._host, self._port)
+
+        if self._schema:
+            self.cursor.execute("SELECT DISTINCT(TABLE_NAME) FROM SYSTEM.CATALOG WHERE TABLE_SCHEM = ?", (self._schema,))
+        else:
+            self.cursor.execute("SELECT DISTINCT(TABLE_NAME) FROM SYSTEM.CATALOG")
+
+        tables = [e[0] for e in self.cursor.fetchall()]
+
+        if drop_all_tables and self._table_name in tables:
+            self.cursor.execute("DROP TABLE IF EXISTS {:s}".format(self._table_name))
+            tables.remove(self._table_name)
+
+        if self._table_name not in tables:
+            self.logger.info(self._DDL)
+            self.cursor.execute(self._DDL)
+
+    def add_seeds(self, batch):
+        if not batch:
+            return
+
+        now = int(time())
+        for fprint, _, request, _ in batch:
+            domain = request.meta[b'domain']
+            strategy = request.meta[b'strategy'][b'name']
+            depth_limit = request.meta[b'strategy'][b'depth_limit']
+            slot = request.meta.get(b'slot')
+            if slot is not None:
+                partition_id = self.seed_partitioner.partition(slot, self.seed_partitions)
+            elif type(domain) == dict:
+                partition_id = self.seed_partitioner.partition(domain[b'name'], self.seed_partitions)
+            elif type(domain) == int:
+                partition_id = self.seed_partitioner.partition_by_hash(domain, self.seed_partitions)
+            else:
+                raise TypeError("partitioning key and info isn't provided")
+
+            self._op(3, self.cursor.execute, self._SQL_ADD_SEED,
+                     (fprint,
+                      '',
+                      request.url,
+                      domain[b'name'],
+                      domain[b'netloc'],
+                      strategy,
+                      depth_limit,
+                      partition_id,
+                      now))
+
+    def _op(self, max_attempt, f, *args):
+        attempt = self._attempt(max_attempt, f, *args)
+        # reconnect for non-transient error.
+        if attempt > max_attempt - 1:
+            self.conn = connect(self._host, self._port, self._schema)
+            self.logger.info("Reconnecting to %s:%d phoenix query server.", self._host, self._port)
+            self._attempt(3, f, args)
+
+    def _attempt(self, max_attempt, f, *args):
+        attempt = 0
+        while attempt < max_attempt:
+            try:
+                f(*args)
+                break
+            except (TException, socket.error):
+                err, msg, _ = sys.exc_info()
+                self.logger.error("{} {}\n".format(err, msg))
+                self.logger.error(traceback.format_exc())
+                attempt += 1
+                sleep(.3)
+        return attempt
+
+
 class PhoenixBackend(DistributedBackend):
     component_name = 'Phoenix Backend'
 
@@ -643,6 +785,7 @@ class PhoenixBackend(DistributedBackend):
         self._queue = None
         self._states = None
         self._domain_metadata = None
+        self._seed = None
 
     def _init_states(self, settings):
         self._states = PhoenixState(self._host, self._port, self._schema,
@@ -670,6 +813,12 @@ class PhoenixBackend(DistributedBackend):
                                             settings.get('HBASE_DOMAIN_METADATA_BATCH_SIZE'),
                                             settings.get('HBASE_USE_FRAMED_COMPACT'))
 
+    def _init_seed(self, settings):
+        self._seed = PhoenixSeed(self._host, self._port, self._schema, self._queue_partitions,
+                                 settings.get('PHOENIX_SEED_TABLE'),
+                                 settings.get('PHOENIX_DROP_ALL_TABLES'),
+                                 settings.get('PHOENIX_DATA_BLOCK_ENCODING'))
+
     @classmethod
     def strategy_worker(cls, manager):
         o = cls(manager)
@@ -689,6 +838,7 @@ class PhoenixBackend(DistributedBackend):
         o = cls(manager)
         o._init_queue(manager.settings)
         o._init_states(manager.settings)
+        o._init_seed(manager.settings)
         return o
 
     @property
@@ -706,6 +856,10 @@ class PhoenixBackend(DistributedBackend):
     @property
     def domain_metadata(self):
         return self._domain_metadata
+
+    @property
+    def seed(self):
+        return self._seed
 
     def frontier_start(self):
         for component in [self.metadata, self.queue, self.states, self.domain_metadata]:
@@ -994,6 +1148,7 @@ class PhoenixFeedBackend(PhoenixBackend):
         o = cls(manager)
         o._init_queue(manager)
         o._init_states(manager.settings)
+        o._init_seed(manager.settings)
         return o
 
     @property

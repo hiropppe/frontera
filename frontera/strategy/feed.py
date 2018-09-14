@@ -32,6 +32,7 @@ class FeedCrawlingStrategy(BaseCrawlingStrategy):
             req.meta[b'depth'] = 0
             req.meta[b'feed'] = True
             req.meta[b'strategy'] = {
+                b'name': 'feed',
                 b'crontab': '0 * * * *',  # every 0 minute
                 b'depth_limit': 0
             }
@@ -55,6 +56,7 @@ class FeedCrawlingStrategy(BaseCrawlingStrategy):
             req.meta[b'depth'] = 0
             req.meta[b'feed'] = True
             req.meta[b'strategy'] = {
+                b'name': 'feed',
                 b'crontab': seeds['crontab'],
                 b'depth_limit': seeds.get('depth_limit', 0)
             }
@@ -67,6 +69,10 @@ class FeedCrawlingStrategy(BaseCrawlingStrategy):
         def accept(link):
             link.meta[b'depth'] = request.meta[b'depth'] + 1
             link.meta[b'strategy'] = request.meta[b'strategy']
+            if b'seed_fingerprint' in request.meta:
+                link.meta[b'seed_fingerprint'] = request.meta[b'seed_fingerprint']
+            else:
+                link.meta[b'seed_fingerprint'] = request.meta[b'fingerprint']
             if (link.meta[b'strategy'][b'depth_limit'] == 0 or
                     link.meta[b'depth'] <= link.meta[b'strategy'][b'depth_limit']):
                 return True

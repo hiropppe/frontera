@@ -24,6 +24,7 @@ class DomainCrawlingStrategy(BaseCrawlingStrategy):
                 req.meta[b'state'] = States.QUEUED
                 req.meta[b'depth'] = 0
                 req.meta[b'strategy'] = {
+                    b'name': 'narrow',
                     b'depth_limit': 0,
                     b'subdomain': True,
                     b'path_aware': False
@@ -46,9 +47,11 @@ class DomainCrawlingStrategy(BaseCrawlingStrategy):
             req = self.create_request(url)
             self.refresh_states(req)
             if req.meta[b'state'] is States.NOT_CRAWLED:
+                req.meta[b'seed_fingerprint'] = req.meta[b'fingerprint']
                 req.meta[b'state'] = States.QUEUED
                 req.meta[b'depth'] = 0
                 req.meta[b'strategy'] = {
+                    b'name': 'narrow',
                     b'depth_limit': seeds.get('depth_limit', 0),
                     b'subdomain': subdomain,
                     b'path_aware': path_aware,
@@ -90,6 +93,10 @@ class DomainCrawlingStrategy(BaseCrawlingStrategy):
         for link in links:
             link.meta[b'depth'] = request.meta[b'depth'] + 1
             link.meta[b'strategy'] = request.meta[b'strategy']
+            if b'seed_fingerprint' in request.meta:
+                link.meta[b'seed_fingerprint'] = request.meta[b'seed_fingerprint']
+            else:
+                link.meta[b'seed_fingerprint'] = request.meta[b'fingerprint']
             if link.meta[b'state'] is States.NOT_CRAWLED:
                 link.meta[b'state'] = States.QUEUED
                 if link.meta[b'strategy'][b'depth_limit'] == 0 or link.meta[b'depth'] <= link.meta[b'strategy'][b'depth_limit']:

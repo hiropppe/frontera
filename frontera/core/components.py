@@ -182,6 +182,20 @@ class DomainMetadata(StartStopMixin):
 
 
 @six.add_metaclass(ABCMeta)
+class Seed(StartStopMixin):
+
+    @abstractmethod
+    def add_seeds(self, batch):
+        """
+        Schedules a new documents for download from batch, and updates score in metadata.
+
+        :param batch: list of tuples(fingerprint, score, request, schedule), if ``schedule`` is True, then document
+            needs to be scheduled for download, False - only update score in metadata.
+        """
+        raise NotImplementedError
+
+
+@six.add_metaclass(ABCMeta)
 class Component(Metadata):
     """
     Interface definition for a frontier component
@@ -272,6 +286,14 @@ class PropertiesMixin(object):
     def domain_metadata(self):
         """
         :return: associated :class:`DomainMetadata <frontera.core.components.DomainMetadata>` object
+        """
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def seed(self):
+        """
+        :return: associated :class:`Seed <frontera.core.components.Seed>` object
         """
         raise NotImplementedError
 

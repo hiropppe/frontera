@@ -52,7 +52,7 @@ class BackendMixin(object):
 
 class StrategyMixin(object):
     def __init__(self, strategy_class, strategy_args, scoring_stream):
-        self._scoring_stream = scoring_stream if scoring_stream else LocalUpdateScoreStream(self.backend.queue)
+        self._scoring_stream = scoring_stream if scoring_stream else LocalUpdateScoreStream(self.backend.queue, self.backend.seed)
         self._states_context = StatesContext(self.backend.states)
         if isinstance(strategy_class, str):
             strategy_class = load_object(strategy_class)
@@ -802,11 +802,14 @@ class MessageBusUpdateScoreStream(UpdateScoreStream):
 
 
 class LocalUpdateScoreStream(UpdateScoreStream):
-    def __init__(self, queue):
+    def __init__(self, queue, seed):
         self._queue = queue
+        self._seed = seed
 
     def send(self, request, score=1.0, dont_queue=False):
-        self._queue.schedule([(request.meta[b'fingerprint'], score, request, not dont_queue)])
+        batch = [(request.meta[b'fingerprint'], score, request, not dont_queue)]
+        self._seed.add_seeds(batch)
+        self._queue.schedule(batch)
 
 
 class StatesContext(object):
