@@ -1,7 +1,7 @@
 from __future__ import absolute_import
 from frontera.core.components import Middleware
 from frontera.exceptions import NotConfigured
-from w3lib.url import canonicalize_url
+from frontera.utils.url import norm_url
 from frontera.utils.misc import load_object
 
 
@@ -73,7 +73,7 @@ class UrlFingerprintMiddleware(BaseFingerprintMiddleware):
     fingerprint_function_name = 'URL_FINGERPRINT_FUNCTION'
 
     def _get_fingerprint(self, url):
-        return self.fingerprint_function(canonicalize_url(url))
+        return self.fingerprint_function(norm_url(url))
 
     def _add_fingerprint(self, obj):
         obj.meta[b'fingerprint'] = self._get_fingerprint(obj.url)

@@ -1,6 +1,8 @@
 from __future__ import absolute_import
 from six.moves.urllib import parse
+from w3lib.url import canonicalize_url
 from w3lib.util import to_native_str
+from rfc3986 import normalize_uri
 
 
 def parse_url(url, encoding=None):
@@ -42,3 +44,9 @@ def parse_domain_from_url_fast(url):
     """
     result = parse_url(url)
     return result.netloc, result.hostname, result.scheme, "", "", ""
+
+
+def norm_url(url):
+    url = canonicalize_url(url)
+    url = normalize_uri(url)
+    return url

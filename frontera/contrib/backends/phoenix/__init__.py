@@ -16,7 +16,7 @@ from frontera.core.models import Request
 from frontera.contrib.backends.partitioners import Crc32NamePartitioner
 from frontera.utils.fingerprint import hostname_local_fingerprint
 from frontera.utils.misc import chunks, get_crc32, time_elapsed
-from frontera.utils.url import parse_domain_from_url_fast
+from frontera.utils.url import parse_domain_from_url_fast, norm_url
 from frontera.contrib.backends.remote.codecs.msgpack import Decoder, Encoder
 from frontera.contrib.backends.phoenix.domaincache import DomainCache
 from frontera.contrib.backends.phoenix.utils import connect
@@ -36,7 +36,6 @@ from io import BytesIO
 from random import choice
 from collections import defaultdict, Iterable
 from thriftpy.thrift import TException
-from rfc3986 import normalize_uri
 from crontab import CronTab
 
 
@@ -458,22 +457,20 @@ class PhoenixMetadata(Metadata):
             CREATE TABLE {table} (
                 URL_FPRINT VARCHAR(40) PRIMARY KEY,
                 "m:url" VARCHAR,
-                "m:normed_url" VARCHAR,
-                "m:domain" VARCHAR,
-                "m:netloc" VARCHAR,
-                "m:normed_url_fprint" VARCHAR(40),
+                "m:domain" VARCHAR(100),
+                "m:netloc" VARCHAR(100),
                 "m:domain_fprint" VARCHAR(40),
                 "m:netloc_fprint" VARCHAR(40),
                 "m:dest_fprint" VARCHAR(40),
                 "m:seed_fprint" VARCHAR(40),
                 "m:title" VARCHAR,
-                "m:content_type" VARCHAR,
+                "m:content_type" VARCHAR(40),
                 "m:headers" BINARY(10240),
                 "m:status_code" UNSIGNED_SMALLINT,
                 "m:signature" VARCHAR(40),
                 "m:depth" UNSIGNED_SMALLINT,
                 "m:score" UNSIGNED_FLOAT,
-                "m:error" VARCHAR,
+                "m:error" VARCHAR(100),
                 "m:created_at" UNSIGNED_LONG,
                 "c:content" VARCHAR
             ) DATA_BLOCK_ENCODING='{data_block_encoding}', VERSIONS={versions}
@@ -503,19 +500,23 @@ class PhoenixMetadata(Metadata):
 
         self.SQL_PAGE_CRAWLED = """
             UPSERT INTO {table} (
-                 url_fprint,
+                 URL_FPRINT,
+                 "m:url",
+                 "m:domain",
+                 "m:netloc",
+                 "m:created_at",
+                 "m:domain_fprint",
+                 "m:netloc_fprint",
                  "m:status_code",
                  "m:content_type",
                  "m:headers",
                  "m:signature",
-                 "m:normed_url",
-                 "m:normed_url_fprint",
                  "m:title",
                  "m:seed_fprint",
                  "m:depth",
                  "c:content")
             VALUES
-                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """.format(table=self._table_name)
 
         self.SQL_REQUEST_ERROR = """
@@ -564,7 +565,7 @@ class PhoenixMetadata(Metadata):
         for seed in seeds:
             self.cursor.execute(self.SQL_ADD_SEED,
                                 (seed.meta[b'fingerprint'],
-                                 seed.url,
+                                 norm_url(seed.url),
                                  seed.meta[b'domain'][b'name'],
                                  seed.meta[b'domain'][b'netloc'],
                                  int(time()),
@@ -575,31 +576,39 @@ class PhoenixMetadata(Metadata):
                                  ))
 
     def page_crawled(self, response):
+        url = norm_url(response.url)
+        domain = response.meta[b'domain'][b'name']
+        netloc = response.meta[b'domain'][b'netloc']
+        created_at = int(time())
+        domain_fprint = response.meta[b'domain'][b'fingerprint']
+        netloc_fprint = response.meta[b'domain'][b'netloc_fingerprint']
         headers = response.headers
         content_type = headers[b'Content-Type'][0] if b'Content-Type' in headers else None
         title = response.meta[b'title'] if b'title' in response.meta else None
         body = response.body
         signature = self.md5(body)
-        normed_url = self.norm_url(response.url)
-        normed_url_fprint = hostname_local_fingerprint(normed_url)
         redirect_urls = response.request.meta.get(b'redirect_urls')
         redirect_fprints = response.request.meta.get(b'redirect_fingerprints')
         if redirect_urls:
             for url, fprint in zip(redirect_urls, redirect_fprints):
                 self.cursor.execute(self.SQL_ADD_REDIRECT,
                                     (fprint,
-                                     url,
+                                     norm_url(url),
                                      int(time()),
                                      redirect_fprints[-1]))
 
         self.cursor.execute(self.SQL_PAGE_CRAWLED,
                             (response.meta[b'fingerprint'],
+                             url,
+                             domain,
+                             netloc,
+                             created_at,
+                             domain_fprint,
+                             netloc_fprint,
                              int(response.status_code),
                              content_type,
                              packb(headers),
                              signature,
-                             normed_url,
-                             normed_url_fprint,
                              title,
                              response.meta[b'seed_fingerprint'],
                              response.meta[b'depth'],
@@ -612,7 +621,7 @@ class PhoenixMetadata(Metadata):
         for link_fingerprint, (link, link_url, link_domain) in six.iteritems(links_dict):
             self.cursor.execute(self.SQL_ADD_SEED,
                                 (link_fingerprint,
-                                 link_url,
+                                 norm_url(link_url),
                                  link_domain[b'name'],
                                  link_domain[b'netloc'],
                                  int(time()),
@@ -624,7 +633,7 @@ class PhoenixMetadata(Metadata):
     def request_error(self, request, error):
         self.cursor.execute(self.SQL_REQUEST_ERROR,
                             (request.meta[b'fingerprint'],
-                             request.url,
+                             norm_url(request.url),
                              int(time()),
                              error,
                              request.meta[b'domain'][b'fingerprint']))
@@ -632,7 +641,7 @@ class PhoenixMetadata(Metadata):
             for url, fprint in zip(request.meta[b'redirect_urls'], request.meta[b'redirect_fingerprints']):
                 self.cursor.execute(self.SQL_ADD_REDIRECT,
                                     (fprint,
-                                     url,
+                                     norm_url(url),
                                      int(time()),
                                      request.meta[b'redirect_fingerprints'][-1]))
 
@@ -641,10 +650,6 @@ class PhoenixMetadata(Metadata):
             raise TypeError('batch should be dict with fingerprint as key, and float score as value')
         for fprint, (score, url, schedule) in six.iteritems(batch):
             self.cursor.execute(self.SQL_UPDATE_SCORE, fprint, score)
-
-    def norm_url(self, url):
-        normed = normalize_uri(url)
-        return normed
 
     def md5(self, body):
         return to_bytes(hashlib.md5(body).hexdigest())
@@ -665,8 +670,8 @@ class PhoenixSeed(Seed):
                 URL_FPRINT VARCHAR(40) PRIMARY KEY,
                 "s:description" VARCHAR(255),
                 "s:url" VARCHAR,
-                "s:domain" VARCHAR,
-                "s:netloc" VARCHAR,
+                "s:domain" VARCHAR(100),
+                "s:netloc" VARCHAR(100),
                 "s:strategy" VARCHAR(30),
                 "s:depth_limit" UNSIGNED_SMALLINT,
                 "s:partition_id" UNSIGNED_TINYINT,
@@ -711,6 +716,7 @@ class PhoenixSeed(Seed):
 
         now = int(time())
         for fprint, _, request, _ in batch:
+            url = norm_url(request.url)
             domain = request.meta[b'domain']
             strategy = request.meta[b'strategy'][b'name']
             depth_limit = request.meta[b'strategy'][b'depth_limit']
@@ -727,7 +733,7 @@ class PhoenixSeed(Seed):
             self._op(3, self.cursor.execute, self._SQL_ADD_SEED,
                      (fprint,
                       '',
-                      request.url,
+                      url,
                       domain[b'name'],
                       domain[b'netloc'],
                       strategy,
@@ -1038,7 +1044,7 @@ class PhoenixFeed(Queue):
             self._op(3, self.cursor.execute, self._SQL_SCHEDULE,
                      (fingerprint,
                       partition_id,
-                      request.url,
+                      norm_url(request.url),
                       timestamp,
                       next_time,
                       crontab,

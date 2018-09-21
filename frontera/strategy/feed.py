@@ -53,6 +53,7 @@ class FeedCrawlingStrategy(BaseCrawlingStrategy):
             #        b'depth_limit': seeds.get('depth_limit', 0)
             #    }
             #    self.schedule(req)
+            req.meta[b'seed_fingerprint'] = req.meta[b'fingerprint']
             req.meta[b'depth'] = 0
             req.meta[b'feed'] = True
             req.meta[b'strategy'] = {
