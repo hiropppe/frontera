@@ -12,6 +12,7 @@ class BreadthFirstCrawlingStrategy(BaseCrawlingStrategy):
     def __init__(self, manager, args, scheduled_stream, states_context):
         super(BreadthFirstCrawlingStrategy, self).__init__(manager, args, scheduled_stream, states_context)
         self.logger = logging.getLogger('strategy.bfs')
+        self.name = 'bfs'
 
     def read_seeds(self, fh):
         for url in fh:
@@ -22,7 +23,7 @@ class BreadthFirstCrawlingStrategy(BaseCrawlingStrategy):
                 req.meta[b'state'] = States.QUEUED
                 req.meta[b'depth'] = 0
                 req.meta[b'strategy'] = {
-                    b'name': 'bfs',
+                    b'name': self.name,
                     b'depth_limit': 0
                 }
                 self.schedule(req)
@@ -37,7 +38,7 @@ class BreadthFirstCrawlingStrategy(BaseCrawlingStrategy):
                 req.meta[b'state'] = States.QUEUED
                 req.meta[b'depth'] = 0
                 req.meta[b'strategy'] = {
-                    b'name': 'bfs',
+                    b'name': self.name,
                     b'depth_limit': seeds.get('depth_limit', 0)
                 }
                 self.schedule(req)
@@ -80,6 +81,7 @@ class DepthFirstCrawlingStrategy(BreadthFirstCrawlingStrategy):
     def __init__(self, manager, args, scheduled_stream, states_context):
         super(DepthFirstCrawlingStrategy, self).__init__(manager, args, scheduled_stream, states_context)
         self.logger = logging.getLogger('strategy.dfs')
+        self.name = 'dfs'
 
     def get_score(self, link):
         depth = float(link.meta[b'depth'])
