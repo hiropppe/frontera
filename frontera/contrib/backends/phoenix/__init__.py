@@ -381,7 +381,10 @@ class PhoenixState(States):
             tables.remove(self._table_name)
 
         if self._table_name not in tables:
-            self.cursor.execute(self._DDL)
+            try:
+                self.cursor.execute(self._DDL)
+            except:
+                pass
 
     def update_cache(self, objs):
         objs = objs if isinstance(objs, Iterable) else [objs]
@@ -550,7 +553,10 @@ class PhoenixMetadata(Metadata):
 
         if self._table_name not in tables:
             self.logger.info(self._DDL)
-            self.cursor.execute(self._DDL)
+            try:
+                self.cursor.execute(self._DDL)
+            except:
+                pass
 
     def frontier_start(self):
         pass
@@ -708,7 +714,10 @@ class PhoenixSeed(Seed):
 
         if self._table_name not in tables:
             self.logger.info(self._DDL)
-            self.cursor.execute(self._DDL)
+            try:
+                self.cursor.execute(self._DDL)
+            except:
+                pass
 
     def add_seeds(self, batch):
         if not batch:
@@ -990,7 +999,10 @@ class PhoenixFeed(Queue):
 
         if self._table_name not in tables:
             self.logger.info(self._DDL)
-            self.cursor.execute(self._DDL)
+            try:
+                self.cursor.execute(self._DDL)
+            except:
+                pass
 
         self._queue_delegate = HBaseQueue(hbase_host,
                                           hbase_port,
