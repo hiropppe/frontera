@@ -223,7 +223,7 @@ class HBaseQueue(Queue):
         if attempt > max_attempt - 1:
             self.connection = hconnect(self._host, self._port, self._namespace, use_framed_compact=self._use_framed_compact)
             self.logger.info("Reconnecting to %s:%d thrift server.", self._host, self._port)
-            self._attempt(max_attempt, f, *args)
+            self._attempt(int(max_attempt/2), f, *args)
 
     def _attempt(self, max_attempt, f, *args):
         attempt = 0
@@ -402,7 +402,7 @@ class PhoenixState(States):
         for obj in objs:
             fingerprint, state = obj.meta[b'fingerprint'], obj.meta[b'state']
             # prepare & write state change to happybase batch
-            self.cursor.execute(self._SQL_UPDATE_STATE, (fingerprint, state))
+            self._op(2, self.cursor.execute, self._SQL_UPDATE_STATE, (fingerprint, state))
             # update LRU cache with the state update
             self._state_cache[fingerprint] = state
             self._state_last_updates += 1
@@ -423,22 +423,14 @@ class PhoenixState(States):
             return
         self.logger.debug('Fetching %d/%d elements from HBase (cache size %d)',
                           len(to_fetch), len(fingerprints), len(self._state_cache))
-        try:
-            for chunk in chunks(to_fetch, 65536):
-                keys = [fprint for fprint in chunk]
-                sql = 'SELECT "s:state" FROM {table} WHERE url_fprint IN (? ' + ',? ' * (len(keys)-1) + ')'
-                sql = sql.format(table=self._table_name)
-                self.cursor.execute(sql, keys)
-                rows = [row[0] for row in self.cursor.fetchall() if len(row) > 1]
-                for fprint, state in rows:
-                    self._state_cache[fprint] = state
-        except Exception:
-            err, msg, _ = sys.exc_info()
-            self.logger.error("{} {}\n".format(err, msg))
-            self.logger.error(traceback.format_exc())
-            # reconnect
-            self.conn = connect(self._host, self._port, self._schema)
-            self.logger.info("Reconnecting to %s:%d thrift server.", self._host, self._port)
+        for chunk in chunks(to_fetch, 65536):
+            keys = [fprint for fprint in chunk]
+            sql = 'SELECT "s:state" FROM {table} WHERE url_fprint IN (? ' + ',? ' * (len(keys)-1) + ')'
+            sql = sql.format(table=self._table_name)
+            self._op(2, self.cursor.execute, sql, keys)
+            rows = [row[0] for row in self.cursor.fetchall() if len(row) > 1]
+            for fprint, state in rows:
+                self._state_cache[fprint] = state
 
     def _update_batch_stats(self):
         self._state_stats['states.batches.sent'] += self._state_last_updates
@@ -455,6 +447,28 @@ class PhoenixState(States):
         stats = self._state_stats.copy()
         self._state_stats.clear()
         return stats
+
+    def _op(self, max_attempt, f, *args):
+        attempt = self._attempt(max_attempt, f, *args)
+        # reconnect for non-transient error.
+        if attempt > max_attempt - 1:
+            self.conn = connect(self._host, self._port, self._schema)
+            self.logger.info("Reconnecting to %s:%d phoenix query server.", self._host, self._port)
+            self._attempt(int(max_attempt/2), f, *args)
+
+    def _attempt(self, max_attempt, f, *args):
+        attempt = 0
+        while attempt < max_attempt:
+            try:
+                f(*args)
+                break
+            except (socket.error,):
+                err, msg, _ = sys.exc_info()
+                self.logger.error("{} {}\n".format(err, msg))
+                self.logger.error(traceback.format_exc())
+                attempt += 1
+                sleep(.3)
+        return attempt
 
 
 class PhoenixMetadata(Metadata):
@@ -479,14 +493,14 @@ class PhoenixMetadata(Metadata):
                 "m:seed_fprint" VARCHAR(40),
                 "m:title" VARCHAR,
                 "m:content_type" VARCHAR(40),
-                "m:headers" BINARY(10240),
+                "m:headers" VARBINARY,
                 "m:status_code" UNSIGNED_SMALLINT,
                 "m:signature" VARCHAR(40),
                 "m:depth" UNSIGNED_SMALLINT,
                 "m:score" UNSIGNED_FLOAT,
                 "m:error" VARCHAR(100),
                 "m:created_at" UNSIGNED_LONG,
-                "c:content" VARCHAR
+                "c:content" VARBINARY
             ) DATA_BLOCK_ENCODING='{data_block_encoding}', VERSIONS={versions}
         """.format(table=self._table_name,
                    data_block_encoding=data_block_encoding,
@@ -567,7 +581,8 @@ class PhoenixMetadata(Metadata):
             try:
                 self.cursor.execute(self._DDL)
             except:
-                pass
+                err, msg, _ = sys.exc_info()
+                self.logger.error("{} {}\n".format(err, msg))
 
     def frontier_start(self):
         pass
@@ -580,19 +595,20 @@ class PhoenixMetadata(Metadata):
 
     def add_seeds(self, seeds):
         for seed in seeds:
-            self.cursor.execute(self.SQL_ADD_SEED,
-                                (seed.meta[b'fingerprint'],
-                                 norm_url(seed.url),
-                                 seed.meta[b'domain'][b'name'],
-                                 seed.meta[b'domain'][b'netloc'],
-                                 int(time()),
-                                 seed.meta[b'domain'][b'fingerprint'],
-                                 seed.meta[b'domain'][b'netloc_fingerprint'],
-                                 seed.meta[b'fingerprint'],
-                                 seed.meta[b'depth']
-                                 ))
+            self._op(2, self.cursor.execute, self.SQL_ADD_SEED,
+                     (seed.meta[b'fingerprint'],
+                      norm_url(seed.url),
+                      seed.meta[b'domain'][b'name'],
+                      seed.meta[b'domain'][b'netloc'],
+                      int(time()),
+                      seed.meta[b'domain'][b'fingerprint'],
+                      seed.meta[b'domain'][b'netloc_fingerprint'],
+                      seed.meta[b'fingerprint'],
+                      seed.meta[b'depth']
+                      ))
 
     def page_crawled(self, response):
+        fprint = response.meta[b'fingerprint']
         url = norm_url(response.url)
         domain = response.meta[b'domain'][b'name']
         netloc = response.meta[b'domain'][b'netloc']
@@ -603,73 +619,104 @@ class PhoenixMetadata(Metadata):
         content_type = headers[b'Content-Type'][0] if b'Content-Type' in headers else None
         title = response.meta[b'title'] if b'title' in response.meta else None
         body = response.body
-        signature = self.md5(body)
+        #if any(e in content_type.lower() for e in ('utf8', 'utf-8')):
+        #    body = body.decode('utf8')
+        #elif any(e in content_type.lower() for e in ('sjis', 'shift-jis', 'shift_jis'))::
+        #    body = body.decode('sjis')
+        signature = self.md5(response.body)
         redirect_urls = response.request.meta.get(b'redirect_urls')
         redirect_fprints = response.request.meta.get(b'redirect_fingerprints')
         if redirect_urls:
             for url, fprint in zip(redirect_urls, redirect_fprints):
-                self.cursor.execute(self.SQL_ADD_REDIRECT,
-                                    (fprint,
-                                     norm_url(url),
-                                     int(time()),
-                                     redirect_fprints[-1]))
+                self._op(2, self.cursor.execute, self.SQL_ADD_REDIRECT,
+                         (fprint,
+                          norm_url(url),
+                          int(time()),
+                          redirect_fprints[-1]))
 
-        self.cursor.execute(self.SQL_PAGE_CRAWLED,
-                            (response.meta[b'fingerprint'],
-                             url,
-                             domain,
-                             netloc,
-                             created_at,
-                             domain_fprint,
-                             netloc_fprint,
-                             int(response.status_code),
-                             content_type,
-                             packb(headers),
-                             signature,
-                             title,
-                             response.meta[b'seed_fingerprint'],
-                             response.meta[b'depth'],
-                             response.body))
+        try:
+            self._op(2, self.cursor.execute, self.SQL_PAGE_CRAWLED,
+                     (fprint,
+                      url,
+                      domain,
+                      netloc,
+                      created_at,
+                      domain_fprint,
+                      netloc_fprint,
+                      int(response.status_code),
+                      content_type,
+                      packb(headers),
+                      signature,
+                      title,
+                      response.meta[b'seed_fingerprint'],
+                      response.meta[b'depth'],
+                      response.body))
+        except ValueError:
+            self.logger.error("Failed to persist fetched data. fprint={}, url={}".format(fprint, url))
+            err, msg, _ = sys.exc_info()
+            self.logger.error("{} {}\n".format(err, msg))
 
     def links_extracted(self, request, links):
         links_dict = dict()
         for link in links:
             links_dict[link.meta[b'fingerprint']] = (link, link.url, link.meta[b'domain'])
         for link_fingerprint, (link, link_url, link_domain) in six.iteritems(links_dict):
-            self.cursor.execute(self.SQL_ADD_SEED,
-                                (link_fingerprint,
-                                 norm_url(link_url),
-                                 link_domain[b'name'],
-                                 link_domain[b'netloc'],
-                                 int(time()),
-                                 link_domain[b'fingerprint'],
-                                 link_domain[b'netloc_fingerprint'],
-                                 link.meta.get(b'seed_fingerprint', None),
-                                 link.meta.get(b'depth', None)))
+            self._op(2, self.cursor.execute, self.SQL_ADD_SEED,
+                     (link_fingerprint,
+                      norm_url(link_url),
+                      link_domain[b'name'],
+                      link_domain[b'netloc'],
+                      int(time()),
+                      link_domain[b'fingerprint'],
+                      link_domain[b'netloc_fingerprint'],
+                      link.meta.get(b'seed_fingerprint', None),
+                      link.meta.get(b'depth', None)))
 
     def request_error(self, request, error):
-        self.cursor.execute(self.SQL_REQUEST_ERROR,
-                            (request.meta[b'fingerprint'],
-                             norm_url(request.url),
-                             int(time()),
-                             error,
-                             request.meta[b'domain'][b'fingerprint']))
+        self._op(2, self.cursor.execute, self.SQL_REQUEST_ERROR,
+                 (request.meta[b'fingerprint'],
+                  norm_url(request.url),
+                  int(time()),
+                  error,
+                  request.meta[b'domain'][b'fingerprint']))
         if b'redirect_urls' in request.meta:
             for url, fprint in zip(request.meta[b'redirect_urls'], request.meta[b'redirect_fingerprints']):
-                self.cursor.execute(self.SQL_ADD_REDIRECT,
-                                    (fprint,
-                                     norm_url(url),
-                                     int(time()),
-                                     request.meta[b'redirect_fingerprints'][-1]))
+                self._op(2, self.cursor.execute, self.SQL_ADD_REDIRECT,
+                         (fprint,
+                          norm_url(url),
+                          int(time()),
+                          request.meta[b'redirect_fingerprints'][-1]))
 
     def update_score(self, batch):
         if not isinstance(batch, dict):
             raise TypeError('batch should be dict with fingerprint as key, and float score as value')
         for fprint, (score, url, schedule) in six.iteritems(batch):
-            self.cursor.execute(self.SQL_UPDATE_SCORE, fprint, score)
+            self._op(2, self.cursor.execute, self.SQL_UPDATE_SCORE, (fprint, score))
 
     def md5(self, body):
         return to_bytes(hashlib.md5(body).hexdigest())
+
+    def _op(self, max_attempt, f, *args):
+        attempt = self._attempt(max_attempt, f, *args)
+        # reconnect for non-transient error.
+        if attempt > max_attempt - 1:
+            self.conn = connect(self._host, self._port, self._schema)
+            self.logger.info("Reconnecting to %s:%d phoenix query server.", self._host, self._port)
+            self._attempt(int(max_attempt/2), f, *args)
+
+    def _attempt(self, max_attempt, f, *args):
+        attempt = 0
+        while attempt < max_attempt:
+            try:
+                f(*args)
+                break
+            except (socket.error,):
+                err, msg, _ = sys.exc_info()
+                self.logger.error("{} {}\n".format(err, msg))
+                self.logger.error(traceback.format_exc())
+                attempt += 1
+                sleep(.3)
+        return attempt
 
 
 class PhoenixSeed(Seed):
@@ -750,7 +797,7 @@ class PhoenixSeed(Seed):
             else:
                 raise TypeError("partitioning key and info isn't provided")
 
-            self._op(3, self.cursor.execute, self._SQL_ADD_SEED,
+            self._op(2, self.cursor.execute, self._SQL_ADD_SEED,
                      (fprint,
                       '',
                       url,
@@ -767,7 +814,7 @@ class PhoenixSeed(Seed):
         if attempt > max_attempt - 1:
             self.conn = connect(self._host, self._port, self._schema)
             self.logger.info("Reconnecting to %s:%d phoenix query server.", self._host, self._port)
-            self._attempt(3, f, args)
+            self._attempt(int(max_attempt/2), f, *args)
 
     def _attempt(self, max_attempt, f, *args):
         attempt = 0
@@ -775,7 +822,7 @@ class PhoenixSeed(Seed):
             try:
                 f(*args)
                 break
-            except (TException, socket.error):
+            except (socket.error,):
                 err, msg, _ = sys.exc_info()
                 self.logger.error("{} {}\n".format(err, msg))
                 self.logger.error(traceback.format_exc())
@@ -1120,7 +1167,7 @@ class PhoenixFeed(Queue):
         if attempt > max_attempt - 1:
             self.conn = connect(self._host, self._port, self._schema)
             self.logger.info("Reconnecting to %s:%d phoenix query server.", self._host, self._port)
-            self._attempt(3, f, args)
+            self._attempt(int(max_attempt/2), f, *args)
 
     def _attempt(self, max_attempt, f, *args):
         attempt = 0
@@ -1128,7 +1175,7 @@ class PhoenixFeed(Queue):
             try:
                 f(*args)
                 break
-            except (TException, socket.error):
+            except (socket.error,):
                 err, msg, _ = sys.exc_info()
                 self.logger.error("{} {}\n".format(err, msg))
                 self.logger.error(traceback.format_exc())
