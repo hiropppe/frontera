@@ -196,8 +196,8 @@ class HBaseQueue(Queue):
             rk = "%d_%s_%d" % (partition_id, "%0.2f_%0.2f" % get_interval(score, 0.01), random_str)
             data.setdefault(rk, []).append((score, item))
 
-        def batch_put(connection, table_name, data):
-            table = connection.table(table_name)
+        def batch_put(table_name, data):
+            table = self.connection.table(table_name)
             with table.batch(transaction=True) as b:
                 for rk, tuples in six.iteritems(data):
                     obj = dict()
@@ -215,18 +215,29 @@ class HBaseQueue(Queue):
                     final[b'f:t'] = str(timestamp)
                     b.put(rk, final)
 
-        try:
-            batch_put(self.connection, self.table_name, data)
-        except (TException, socket.error):
-            err, msg, _ = sys.exc_info()
-            self.logger.error("{} {}\n".format(err, msg))
-            self.logger.error(traceback.format_exc())
-            # reconnect
+        self._op(3, batch_put, self.table_name, data)
+
+    def _op(self, max_attempt, f, *args):
+        attempt = self._attempt(max_attempt, f, *args)
+        # reconnect for non-transient error.
+        if attempt > max_attempt - 1:
             self.connection = hconnect(self._host, self._port, self._namespace, use_framed_compact=self._use_framed_compact)
             self.logger.info("Reconnecting to %s:%d thrift server.", self._host, self._port)
-            sleep(.5)
-            # retry
-            batch_put(self.connection, self.table_name, data)
+            self._attempt(max_attempt, f, *args)
+
+    def _attempt(self, max_attempt, f, *args):
+        attempt = 0
+        while attempt < max_attempt:
+            try:
+                f(*args)
+                break
+            except (TException, socket.error):
+                err, msg, _ = sys.exc_info()
+                self.logger.error("{} {}\n".format(err, msg))
+                self.logger.error(traceback.format_exc())
+                attempt += 1
+                sleep(.3)
+        return attempt
 
     def get_next_requests(self, max_n_requests, partition_id, **kwargs):
         """
