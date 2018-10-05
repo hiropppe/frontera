@@ -105,22 +105,22 @@ class HBaseQueue(Queue):
         self._port = port
         self._namespace = namespace
         self._use_framed_compact = use_framed_compact
-        self.connection = hconnect(host, port, namespace, use_framed_compact=use_framed_compact)
+        connection = hconnect(host, port, namespace, use_framed_compact=use_framed_compact)
         self.logger.info("Connecting to %s:%d thrift server.", host, port)
         self.partitions = [i for i in range(0, partitions)]
         self.partitioner = Crc32NamePartitioner(self.partitions)
         self.table_name = to_bytes(table_name)
 
-        tables = set(self.connection.tables())
+        tables = set(connection.tables())
         if drop and self.table_name in tables:
-            self.connection.delete_table(self.table_name, disable=True)
+            connection.delete_table(self.table_name, disable=True)
             tables.remove(self.table_name)
 
         if self.table_name not in tables:
             schema = {'f': {'max_versions': 1}}
             if use_snappy:
                 schema['f']['compression'] = 'SNAPPY'
-            self.connection.create_table(self.table_name, schema)
+            connection.create_table(self.table_name, schema)
 
         class DumbResponse:
             pass
@@ -196,8 +196,8 @@ class HBaseQueue(Queue):
             rk = "%d_%s_%d" % (partition_id, "%0.2f_%0.2f" % get_interval(score, 0.01), random_str)
             data.setdefault(rk, []).append((score, item))
 
-        def batch_put(table_name, data):
-            table = self.connection.table(table_name)
+        def batch_put(connection, table_name, data):
+            table = connection.table(table_name)
             with table.batch(transaction=True) as b:
                 for rk, tuples in six.iteritems(data):
                     obj = dict()
@@ -215,13 +215,16 @@ class HBaseQueue(Queue):
                     final[b'f:t'] = str(timestamp)
                     b.put(rk, final)
 
-        self._op(3, batch_put, self.table_name, data)
+        connection = hconnect(self._host, self._port, self._namespace, use_framed_compact=self._use_framed_compact)
+        self._op(3, batch_put, connection, self.table_name, data)
 
     def _op(self, max_attempt, f, *args):
         attempt = self._attempt(max_attempt, f, *args)
         # reconnect for non-transient error.
         if attempt > max_attempt - 1:
-            self.connection = hconnect(self._host, self._port, self._namespace, use_framed_compact=self._use_framed_compact)
+            tmp_args = list(args)
+            tmp_args[0] = hconnect(self._host, self._port, self._namespace, use_framed_compact=self._use_framed_compact)
+            args = tuple(tmp_args)
             self.logger.info("Reconnecting to %s:%d thrift server.", self._host, self._port)
             self._attempt(int(max_attempt/2), f, *args)
 
