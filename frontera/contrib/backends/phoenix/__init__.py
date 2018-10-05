@@ -492,7 +492,7 @@ class PhoenixMetadata(Metadata):
                 "m:dest_fprint" VARCHAR(40),
                 "m:seed_fprint" VARCHAR(40),
                 "m:title" VARCHAR,
-                "m:content_type" VARCHAR(40),
+                "m:content_type" VARCHAR,
                 "m:headers" VARBINARY,
                 "m:status_code" UNSIGNED_SMALLINT,
                 "m:signature" VARCHAR(40),
