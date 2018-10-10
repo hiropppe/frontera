@@ -7,7 +7,7 @@ from time import sleep
 import six
 from kafka import KafkaConsumer, KafkaProducer, TopicPartition
 
-from frontera.contrib.backends.partitioners import FingerprintPartitioner, Crc32NamePartitioner
+from frontera.contrib.backends.partitioners import FingerprintPartitioner, Crc32NamePartitioner, FastPassPartitioner
 from frontera.contrib.messagebus.kafka.offsets_fetcher import OffsetsFetcherAsync
 from frontera.core.messagebus import BaseMessageBus, BaseSpiderLogStream, BaseSpiderFeedStream, \
     BaseStreamConsumer, BaseScoringLogStream, BaseStreamProducer, BaseStatsLogStream
@@ -185,6 +185,7 @@ class SpiderFeedStream(BaseSpiderFeedStream):
         self._offset_fetcher = OffsetsFetcherAsync(**kwargs)
         self._codec = messagebus.codec
         self._partitions = messagebus.spider_feed_partitions
+        self._fastpass_score_threshold = messagebus.fastpass_score_threshold
 
     def consumer(self, partition_id):
         c = Consumer(self._location, self._enable_ssl, self._cert_path, self._topic, self._general_group, partition_id)
@@ -202,6 +203,8 @@ class SpiderFeedStream(BaseSpiderFeedStream):
     def producer(self):
         partitioner = Crc32NamePartitioner(self._partitions) if self._hostname_partitioning \
             else FingerprintPartitioner(self._partitions)
+        if self._fastpass_score_threshold > 0.0:
+            partitioner = FastPassPartitioner(partitioner)
         return KeyedProducer(self._location, self._enable_ssl, self._cert_path, self._topic, partitioner, self._codec,
                              batch_size=DEFAULT_BATCH_SIZE,
                              buffer_memory=DEFAULT_BUFFER_MEMORY)
@@ -258,6 +261,7 @@ class MessageBus(BaseMessageBus):
         self.cert_path = settings.get('KAFKA_CERT_PATH')
         self.spider_log_partitions = settings.get('SPIDER_LOG_PARTITIONS')
         self.spider_feed_partitions = settings.get('SPIDER_FEED_PARTITIONS')
+        self.fastpass_score_threshold = settings.get('QUEUE_FASTPASS_SCORE_THRESHOLD')
 
     def spider_log(self):
         return SpiderLogStream(self)

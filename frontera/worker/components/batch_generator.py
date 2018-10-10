@@ -21,15 +21,23 @@ class BatchGenerator(DBWorkerThreadComponent):
         super(BatchGenerator, self).__init__(worker, settings, stop_event, **kwargs)
         if no_batches:
             raise NotConfigured('BatchGenerator is disabled with --no-batches')
-
         self.run_backoff = settings.get('NEW_BATCH_DELAY')
         self.backend = worker.backend
         self.spider_feed = worker.message_bus.spider_feed()
         self.spider_feed_producer = self.spider_feed.producer()
 
-        self.get_key_function = self.get_fingerprint
-        if settings.get('QUEUE_HOSTNAME_PARTITIONING'):
-            self.get_key_function = self.get_hostname
+        hostname_partitioning = settings.get('QUEUE_HOSTNAME_PARTITIONING')
+        fastpass_score_threshold = settings.get('QUEUE_FASTPASS_SCORE_THRESHOLD')
+        if hostname_partitioning:
+            if fastpass_score_threshold > 0.0:
+                self.get_key_function = self.get_hostname_with_score
+            else:
+                self.get_key_function = self.get_hostname
+        else:
+            if fastpass_score_threshold > 0.0:
+                self.get_key_function = self.get_fingerprint_with_score
+            else:
+                self.get_key_function = self.get_fingerprint
 
         self.domains_blacklist = settings.get('DOMAINS_BLACKLIST')
         self.max_next_requests = settings.MAX_NEXT_REQUESTS
@@ -128,3 +136,15 @@ class BatchGenerator(DBWorkerThreadComponent):
 
     def get_hostname(self, request):
         return request.meta[b'domain'][b'name']
+
+    def get_fingerprint_with_score(self, request):
+        score = request.meta[b'score']
+        fprint = request.meta[b'fingerprint']
+        key = str(score) + '_' + fprint.decode()
+        return key.encode()
+
+    def get_hostname_with_score(self, request):
+        score = request.meta[b'score']
+        hostname = request.meta[b'domain'][b'name']
+        key = str(score) + '_' + hostname.decode()
+        return key.encode()
