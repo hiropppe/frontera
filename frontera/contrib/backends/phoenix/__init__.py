@@ -507,7 +507,7 @@ class PhoenixMetadata(Metadata):
             ) DATA_BLOCK_ENCODING='{data_block_encoding}', VERSIONS={versions}
         """.format(table=self._table_name,
                    data_block_encoding=data_block_encoding,
-                   versions=1)
+                   versions=2147483647)
 
         self.SQL_ADD_SEED = """
             UPSERT INTO {table} (
