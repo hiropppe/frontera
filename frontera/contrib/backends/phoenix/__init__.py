@@ -359,9 +359,6 @@ class PhoenixState(States):
         self._host = host
         self._port = port
         self._schema = schema.upper()
-        self.conn = connect(host, port, schema)
-        self.cursor = self.conn.cursor()
-        self.logger.info("Connecting to %s:%d phoenix query server.", host, port)
         self._table_name = table_name.upper()
         self._state_stats = defaultdict(int)
         self._state_cache = LRUCacheWithStats(maxsize=cache_size_limit,
@@ -384,33 +381,44 @@ class PhoenixState(States):
                 (?, ?)
         """.format(table=self._table_name)
 
-        if self._schema:
-            self.cursor.execute("SELECT DISTINCT(TABLE_NAME) FROM SYSTEM.CATALOG WHERE TABLE_SCHEM = ?", (self._schema,))
-        else:
-            self.cursor.execute("SELECT DISTINCT(TABLE_NAME) FROM SYSTEM.CATALOG")
+        conn = connect(self._host, self._port, self._schema)
+        try:
+            cursor = conn.cursor()
 
-        tables = [e[0] for e in self.cursor.fetchall()]
+            if self._schema:
+                cursor.execute("SELECT DISTINCT(TABLE_NAME) FROM SYSTEM.CATALOG WHERE TABLE_SCHEM = ?", (self._schema,))
+            else:
+                cursor.execute("SELECT DISTINCT(TABLE_NAME) FROM SYSTEM.CATALOG")
 
-        if drop_all_tables and self._table_name in tables:
-            self.cursor.execute("DROP TABLE IF EXISTS {:s}".format(self._table_name))
-            tables.remove(self._table_name)
+            tables = [e[0] for e in cursor.fetchall()]
 
-        if self._table_name not in tables:
-            try:
-                self.cursor.execute(self._DDL)
-            except:
-                pass
+            if drop_all_tables and self._table_name in tables:
+                cursor.execute("DROP TABLE IF EXISTS {:s}".format(self._table_name))
+                tables.remove(self._table_name)
+
+            if self._table_name not in tables:
+                try:
+                    cursor.execute(self._DDL)
+                except:
+                    pass
+        finally:
+            conn.close()
 
     def update_cache(self, objs):
         objs = objs if isinstance(objs, Iterable) else [objs]
-        for obj in objs:
-            fingerprint, state = obj.meta[b'fingerprint'], obj.meta[b'state']
-            # prepare & write state change to happybase batch
-            self._op(2, self.cursor.execute, self._SQL_UPDATE_STATE, (fingerprint, state))
-            # update LRU cache with the state update
-            self._state_cache[fingerprint] = state
-            self._state_last_updates += 1
-        self._update_batch_stats()
+        conn = connect(self._host, self._port, self._schema)
+        try:
+            cursor = conn.cursor()
+            for obj in objs:
+                fingerprint, state = obj.meta[b'fingerprint'], obj.meta[b'state']
+                # prepare & write state change to happybase batch
+                self._op(2, cursor.execute, self._SQL_UPDATE_STATE, (fingerprint, state))
+                # update LRU cache with the state update
+                self._state_cache[fingerprint] = state
+                self._state_last_updates += 1
+            self._update_batch_stats()
+        finally:
+            conn.close()
 
     def set_states(self, objs):
         objs = objs if isinstance(objs, Iterable) else [objs]
@@ -425,16 +433,21 @@ class PhoenixState(States):
         self._update_cache_stats(hits=len(fingerprints) - len(to_fetch), misses=len(to_fetch))
         if not to_fetch:
             return
-        self.logger.debug('Fetching %d/%d elements from HBase (cache size %d)',
+        self.logger.debug('Fetching %d/%d elements from Phoenix (cache size %d)',
                           len(to_fetch), len(fingerprints), len(self._state_cache))
-        for chunk in chunks(to_fetch, 65536):
-            keys = [fprint for fprint in chunk]
-            sql = 'SELECT "s:state" FROM {table} WHERE url_fprint IN (? ' + ',? ' * (len(keys)-1) + ')'
-            sql = sql.format(table=self._table_name)
-            self._op(2, self.cursor.execute, sql, keys)
-            rows = [row[0] for row in self.cursor.fetchall() if len(row) > 1]
-            for fprint, state in rows:
-                self._state_cache[fprint] = state
+        conn = connect(self._host, self._port, self._schema)
+        try:
+            cursor = conn.cursor()
+            for chunk in chunks(to_fetch, 65536):
+                keys = [fprint for fprint in chunk]
+                sql = 'SELECT "s:state" FROM {table} WHERE url_fprint IN (? ' + ',? ' * (len(keys)-1) + ')'
+                sql = sql.format(table=self._table_name)
+                self._op(2, cursor.execute, sql, keys)
+                rows = [row[0] for row in cursor.fetchall() if len(row) > 1]
+                for fprint, state in rows:
+                    self._state_cache[fprint] = state
+        finally:
+            conn.close()
 
     def _update_batch_stats(self):
         self._state_stats['states.batches.sent'] += self._state_last_updates
@@ -456,10 +469,13 @@ class PhoenixState(States):
         attempt = self._attempt(max_attempt, f, *args)
         # reconnect for non-transient error.
         if attempt > max_attempt - 1:
-            self.conn = connect(self._host, self._port, self._schema)
-            self.cursor = self.conn.cursor()
-            self.logger.info("Reconnecting to %s:%d phoenix query server.", self._host, self._port)
-            self._attempt(int(max_attempt/2), f, *args)
+            conn = connect(self._host, self._port, self._schema)
+            try:
+                cursor = conn.cursor()
+                self.logger.info("Reconnecting to %s:%d phoenix query server.", self._host, self._port)
+                self._attempt(int(max_attempt/2), cursor.execute, *args)
+            finally:
+                conn.close()
 
     def _attempt(self, max_attempt, f, *args):
         attempt = 0
@@ -467,7 +483,7 @@ class PhoenixState(States):
             try:
                 f(*args)
                 break
-            except (socket.error,):
+            except:
                 err, msg, _ = sys.exc_info()
                 self.logger.error("{} {}\n".format(err, msg))
                 self.logger.error(traceback.format_exc())
@@ -562,28 +578,30 @@ class PhoenixMetadata(Metadata):
                 (?, ?, ?, ?, ?)
         """.format(table=self._table_name)
 
-        self.conn = connect(self._host, self._port, self._schema)
-        self.cursor = self.conn.cursor()
-        self.logger.info("Connecting to %s:%d phoenix query server.", self._host, self._port)
+        conn = connect(self._host, self._port, self._schema)
+        try:
+            cursor = conn.cursor()
 
-        if self._schema:
-            self.cursor.execute("SELECT DISTINCT(TABLE_NAME) FROM SYSTEM.CATALOG WHERE TABLE_SCHEM = ?", (self._schema,))
-        else:
-            self.cursor.execute("SELECT DISTINCT(TABLE_NAME) FROM SYSTEM.CATALOG")
+            if self._schema:
+                cursor.execute("SELECT DISTINCT(TABLE_NAME) FROM SYSTEM.CATALOG WHERE TABLE_SCHEM = ?", (self._schema,))
+            else:
+                cursor.execute("SELECT DISTINCT(TABLE_NAME) FROM SYSTEM.CATALOG")
 
-        tables = [e[0] for e in self.cursor.fetchall()]
+            tables = [e[0] for e in cursor.fetchall()]
 
-        if drop_all_tables and self._table_name in tables:
-            self.cursor.execute("DROP TABLE IF EXISTS {:s}".format(self._table_name))
-            tables.remove(self._table_name)
+            if drop_all_tables and self._table_name in tables:
+                cursor.execute("DROP TABLE IF EXISTS {:s}".format(self._table_name))
+                tables.remove(self._table_name)
 
-        if self._table_name not in tables:
-            self.logger.info(self._DDL)
-            try:
-                self.cursor.execute(self._DDL)
-            except:
-                err, msg, _ = sys.exc_info()
-                self.logger.error("{} {}\n".format(err, msg))
+            if self._table_name not in tables:
+                self.logger.info(self._DDL)
+                try:
+                    cursor.execute(self._DDL)
+                except:
+                    err, msg, _ = sys.exc_info()
+                    self.logger.error("{} {}\n".format(err, msg))
+        finally:
+            conn.close()
 
     def frontier_start(self):
         pass
@@ -595,18 +613,23 @@ class PhoenixMetadata(Metadata):
         pass
 
     def add_seeds(self, seeds):
-        for seed in seeds:
-            self._op(2, self.cursor.execute, self.SQL_ADD_SEED,
-                     (seed.meta[b'fingerprint'],
-                      norm_url(seed.url),
-                      seed.meta[b'domain'][b'name'],
-                      seed.meta[b'domain'][b'netloc'],
-                      int(time()),
-                      seed.meta[b'domain'][b'fingerprint'],
-                      seed.meta[b'domain'][b'netloc_fingerprint'],
-                      seed.meta[b'fingerprint'],
-                      seed.meta[b'depth']
-                      ))
+        conn = connect(self._host, self._port, self._schema)
+        try:
+            cursor = conn.cursor()
+            for seed in seeds:
+                self._op(2, cursor.execute, self.SQL_ADD_SEED,
+                         (seed.meta[b'fingerprint'],
+                          norm_url(seed.url),
+                          seed.meta[b'domain'][b'name'],
+                          seed.meta[b'domain'][b'netloc'],
+                          int(time()),
+                          seed.meta[b'domain'][b'fingerprint'],
+                          seed.meta[b'domain'][b'netloc_fingerprint'],
+                          seed.meta[b'fingerprint'],
+                          seed.meta[b'depth']
+                          ))
+        finally:
+            conn.close()
 
     def page_crawled(self, response):
         fprint = response.meta[b'fingerprint']
@@ -621,12 +644,12 @@ class PhoenixMetadata(Metadata):
         ctype = None
         charset = None
         if content_type:
-            ctype = self.r_ctype.findall(content_type)
-            charset = self.r_charset.findall(content_type)
-            if ctype:
-                ctype = ctype[0].lower()
-            if charset:
-                charset = charset[0].lower()
+            ctypes = self.r_ctype.findall(content_type)
+            charsets = self.r_charset.findall(content_type)
+            if ctypes:
+                ctype = ctypes[0].lower()
+            if charsets:
+                charset = charsets[0].lower()
 
         title = response.meta[b'title'] if b'title' in response.meta else None
         #body = response.body
@@ -637,67 +660,83 @@ class PhoenixMetadata(Metadata):
         signature = self.md5(response.body)
         redirect_urls = response.request.meta.get(b'redirect_urls')
         redirect_fprints = response.request.meta.get(b'redirect_fingerprints')
-        if redirect_urls:
-            for url, fprint in zip(redirect_urls, redirect_fprints):
-                self._op(2, self.cursor.execute, self.SQL_ADD_REDIRECT,
-                         (fprint,
-                          norm_url(url),
-                          int(time()),
-                          redirect_fprints[-1]))
 
+        conn = connect(self._host, self._port, self._schema)
         try:
-            self._op(2, self.cursor.execute, self.SQL_PAGE_CRAWLED,
-                     (fprint,
-                      url,
-                      domain,
-                      netloc,
-                      created_at,
-                      domain_fprint,
-                      netloc_fprint,
-                      int(response.status_code),
-                      ctype,
-                      charset,
-                      packb(headers),
-                      signature,
-                      title,
-                      response.meta[b'seed_fingerprint'],
-                      response.meta[b'depth'],
-                      response.body))
-        except ValueError:
-            self.logger.error("Failed to persist fetched data. fprint={}, url={}".format(fprint, url))
-            err, msg, _ = sys.exc_info()
-            self.logger.error("{} {}\n".format(err, msg))
+            cursor = conn.cursor()
+            if redirect_urls:
+                for url, fprint in zip(redirect_urls, redirect_fprints):
+                    self._op(2, cursor.execute, self.SQL_ADD_REDIRECT,
+                             (fprint,
+                              norm_url(url),
+                              int(time()),
+                              redirect_fprints[-1]))
+
+            try:
+                self._op(2, cursor.execute, self.SQL_PAGE_CRAWLED,
+                         (fprint,
+                          url,
+                          domain,
+                          netloc,
+                          created_at,
+                          domain_fprint,
+                          netloc_fprint,
+                          int(response.status_code),
+                          ctype,
+                          charset,
+                          packb(headers),
+                          signature,
+                          title,
+                          response.meta[b'seed_fingerprint'],
+                          response.meta[b'depth'],
+                          response.body))
+            except ValueError:
+                self.logger.error("Failed to persist fetched data. fprint={}, url={}".format(fprint, url))
+                err, msg, _ = sys.exc_info()
+                self.logger.error("{} {}\n".format(err, msg))
+        finally:
+            conn.close()
 
     def links_extracted(self, request, links):
-        links_dict = dict()
-        for link in links:
-            links_dict[link.meta[b'fingerprint']] = (link, link.url, link.meta[b'domain'])
-        for link_fingerprint, (link, link_url, link_domain) in six.iteritems(links_dict):
-            self._op(2, self.cursor.execute, self.SQL_ADD_SEED,
-                     (link_fingerprint,
-                      norm_url(link_url),
-                      link_domain[b'name'],
-                      link_domain[b'netloc'],
-                      int(time()),
-                      link_domain[b'fingerprint'],
-                      link_domain[b'netloc_fingerprint'],
-                      link.meta.get(b'seed_fingerprint', None),
-                      link.meta.get(b'depth', None)))
+        conn = connect(self._host, self._port, self._schema)
+        try:
+            cursor = conn.cursor()
+            links_dict = dict()
+            for link in links:
+                links_dict[link.meta[b'fingerprint']] = (link, link.url, link.meta[b'domain'])
+            for link_fingerprint, (link, link_url, link_domain) in six.iteritems(links_dict):
+                self._op(2, cursor.execute, self.SQL_ADD_SEED,
+                         (link_fingerprint,
+                          norm_url(link_url),
+                          link_domain[b'name'],
+                          link_domain[b'netloc'],
+                          int(time()),
+                          link_domain[b'fingerprint'],
+                          link_domain[b'netloc_fingerprint'],
+                          link.meta.get(b'seed_fingerprint', None),
+                          link.meta.get(b'depth', None)))
+        finally:
+            conn.close()
 
     def request_error(self, request, error):
-        self._op(2, self.cursor.execute, self.SQL_REQUEST_ERROR,
-                 (request.meta[b'fingerprint'],
-                  norm_url(request.url),
-                  int(time()),
-                  error,
-                  request.meta[b'domain'][b'fingerprint']))
-        if b'redirect_urls' in request.meta:
-            for url, fprint in zip(request.meta[b'redirect_urls'], request.meta[b'redirect_fingerprints']):
-                self._op(2, self.cursor.execute, self.SQL_ADD_REDIRECT,
-                         (fprint,
-                          norm_url(url),
-                          int(time()),
-                          request.meta[b'redirect_fingerprints'][-1]))
+        conn = connect(self._host, self._port, self._schema)
+        try:
+            cursor = conn.cursor()
+            self._op(2, cursor.execute, self.SQL_REQUEST_ERROR,
+                     (request.meta[b'fingerprint'],
+                      norm_url(request.url),
+                      int(time()),
+                      error,
+                      request.meta[b'domain'][b'fingerprint']))
+            if b'redirect_urls' in request.meta:
+                for url, fprint in zip(request.meta[b'redirect_urls'], request.meta[b'redirect_fingerprints']):
+                    self._op(2, cursor.execute, self.SQL_ADD_REDIRECT,
+                             (fprint,
+                              norm_url(url),
+                              int(time()),
+                              request.meta[b'redirect_fingerprints'][-1]))
+        finally:
+            conn.close()
 
     def update_score(self, batch):
         # never called ?
@@ -710,10 +749,13 @@ class PhoenixMetadata(Metadata):
         attempt = self._attempt(max_attempt, f, *args)
         # reconnect for non-transient error.
         if attempt > max_attempt - 1:
-            self.conn = connect(self._host, self._port, self._schema)
-            self.cursor = self.conn.cursor()
-            self.logger.info("Reconnecting to %s:%d phoenix query server.", self._host, self._port)
-            self._attempt(int(max_attempt/2), f, *args)
+            conn = connect(self._host, self._port, self._schema)
+            try:
+                cursor = conn.cursor()
+                self.logger.info("Reconnecting to %s:%d phoenix query server.", self._host, self._port)
+                self._attempt(int(max_attempt/2), cursor.execute, *args)
+            finally:
+                conn.close()
 
     def _attempt(self, max_attempt, f, *args):
         attempt = 0
@@ -721,7 +763,7 @@ class PhoenixMetadata(Metadata):
             try:
                 f(*args)
                 break
-            except (socket.error,):
+            except:
                 err, msg, _ = sys.exc_info()
                 self.logger.error("{} {}\n".format(err, msg))
                 self.logger.error(traceback.format_exc())
@@ -766,67 +808,78 @@ class PhoenixSeed(Seed):
         self.seed_partitions = [i for i in range(0, seed_partitions)]
         self.seed_partitioner = Crc32NamePartitioner(self.seed_partitions)
 
-        self.conn = connect(self._host, self._port, self._schema)
-        self.cursor = self.conn.cursor()
-        self.logger.info("Connecting to %s:%d phoenix query server.", self._host, self._port)
+        conn = connect(self._host, self._port, self._schema)
+        try:
+            cursor = conn.cursor()
 
-        if self._schema:
-            self.cursor.execute("SELECT DISTINCT(TABLE_NAME) FROM SYSTEM.CATALOG WHERE TABLE_SCHEM = ?", (self._schema,))
-        else:
-            self.cursor.execute("SELECT DISTINCT(TABLE_NAME) FROM SYSTEM.CATALOG")
+            if self._schema:
+                cursor.execute("SELECT DISTINCT(TABLE_NAME) FROM SYSTEM.CATALOG WHERE TABLE_SCHEM = ?", (self._schema,))
+            else:
+                cursor.execute("SELECT DISTINCT(TABLE_NAME) FROM SYSTEM.CATALOG")
 
-        tables = [e[0] for e in self.cursor.fetchall()]
+            tables = [e[0] for e in cursor.fetchall()]
 
-        if drop_all_tables and self._table_name in tables:
-            self.cursor.execute("DROP TABLE IF EXISTS {:s}".format(self._table_name))
-            tables.remove(self._table_name)
+            if drop_all_tables and self._table_name in tables:
+                cursor.execute("DROP TABLE IF EXISTS {:s}".format(self._table_name))
+                tables.remove(self._table_name)
 
-        if self._table_name not in tables:
-            self.logger.info(self._DDL)
-            try:
-                self.cursor.execute(self._DDL)
-            except:
-                pass
+            if self._table_name not in tables:
+                self.logger.info(self._DDL)
+                try:
+                    cursor.execute(self._DDL)
+                except:
+                    pass
+        finally:
+            conn.close()
 
     def add_seeds(self, batch):
         if not batch:
             return
 
-        now = int(time())
-        for fprint, _, request, _ in batch:
-            url = norm_url(request.url)
-            domain = request.meta[b'domain']
-            strategy = request.meta[b'strategy'][b'name']
-            depth_limit = request.meta[b'strategy'][b'depth_limit']
-            slot = request.meta.get(b'slot')
-            if slot is not None:
-                partition_id = self.seed_partitioner.partition(slot, self.seed_partitions)
-            elif type(domain) == dict:
-                partition_id = self.seed_partitioner.partition(domain[b'name'], self.seed_partitions)
-            elif type(domain) == int:
-                partition_id = self.seed_partitioner.partition_by_hash(domain, self.seed_partitions)
-            else:
-                raise TypeError("partitioning key and info isn't provided")
+        conn = connect(self._host, self._port, self._schema)
+        try:
+            cursor = conn.cursor()
 
-            self._op(2, self.cursor.execute, self._SQL_ADD_SEED,
-                     (fprint,
-                      '',
-                      url,
-                      domain[b'name'],
-                      domain[b'netloc'],
-                      strategy,
-                      depth_limit,
-                      partition_id,
-                      now))
+            now = int(time())
+            for fprint, _, request, _ in batch:
+                url = norm_url(request.url)
+                domain = request.meta[b'domain']
+                strategy = request.meta[b'strategy'][b'name']
+                depth_limit = request.meta[b'strategy'][b'depth_limit']
+                slot = request.meta.get(b'slot')
+                if slot is not None:
+                    partition_id = self.seed_partitioner.partition(slot, self.seed_partitions)
+                elif type(domain) == dict:
+                    partition_id = self.seed_partitioner.partition(domain[b'name'], self.seed_partitions)
+                elif type(domain) == int:
+                    partition_id = self.seed_partitioner.partition_by_hash(domain, self.seed_partitions)
+                else:
+                    raise TypeError("partitioning key and info isn't provided")
+
+                self._op(2, cursor.execute, self._SQL_ADD_SEED,
+                         (fprint,
+                          '',
+                          url,
+                          domain[b'name'],
+                          domain[b'netloc'],
+                          strategy,
+                          depth_limit,
+                          partition_id,
+                          now))
+        finally:
+            conn.close()
 
     def _op(self, max_attempt, f, *args):
         attempt = self._attempt(max_attempt, f, *args)
         # reconnect for non-transient error.
         if attempt > max_attempt - 1:
-            self.conn = connect(self._host, self._port, self._schema)
-            self.cursor = self.conn.cursor()
-            self.logger.info("Reconnecting to %s:%d phoenix query server.", self._host, self._port)
-            self._attempt(int(max_attempt/2), f, *args)
+            conn = connect(self._host, self._port, self._schema)
+            try:
+                cursor = conn.cursor()
+                self.logger.info("Reconnecting to %s:%d phoenix query server.", self._host, self._port)
+                self._attempt(int(max_attempt/2), cursor.execute, *args)
+            finally:
+                conn.close()
 
     def _attempt(self, max_attempt, f, *args):
         attempt = 0
@@ -834,7 +887,7 @@ class PhoenixSeed(Seed):
             try:
                 f(*args)
                 break
-            except (socket.error,):
+            except:
                 err, msg, _ = sys.exc_info()
                 self.logger.error("{} {}\n".format(err, msg))
                 self.logger.error(traceback.format_exc())
@@ -1008,9 +1061,6 @@ class PhoenixFeed(Queue):
         self._host = phx_host
         self._port = phx_port
         self._schema = phx_schema.upper()
-        self.conn = connect(self._host, self._port, self._schema)
-        self.cursor = self.conn.cursor()
-        self.logger.info("Connecting to %s:%d phoenix query server.", self._host, self._port)
         self._table_name = feed_table_name.upper()
 
         self._DDL = """
@@ -1056,23 +1106,29 @@ class PhoenixFeed(Queue):
         self.feed_partitions = [i for i in range(0, feed_partitions)]
         self.feed_partitioner = Crc32NamePartitioner(self.feed_partitions)
 
-        if self._schema:
-            self.cursor.execute("SELECT DISTINCT(TABLE_NAME) FROM SYSTEM.CATALOG WHERE TABLE_SCHEM = ?", (self._schema,))
-        else:
-            self.cursor.execute("SELECT DISTINCT(TABLE_NAME) FROM SYSTEM.CATALOG")
+        conn = connect(self._host, self._port, self._schema)
+        try:
+            cursor = conn.cursor()
 
-        tables = [e[0] for e in self.cursor.fetchall()]
+            if self._schema:
+                cursor.execute("SELECT DISTINCT(TABLE_NAME) FROM SYSTEM.CATALOG WHERE TABLE_SCHEM = ?", (self._schema,))
+            else:
+                cursor.execute("SELECT DISTINCT(TABLE_NAME) FROM SYSTEM.CATALOG")
 
-        if drop_all_tables and self._table_name in tables:
-            self.cursor.execute("DROP TABLE IF EXISTS {:s}".format(self._table_name))
-            tables.remove(self._table_name)
+            tables = [e[0] for e in cursor.fetchall()]
 
-        if self._table_name not in tables:
-            self.logger.info(self._DDL)
-            try:
-                self.cursor.execute(self._DDL)
-            except:
-                pass
+            if drop_all_tables and self._table_name in tables:
+                cursor.execute("DROP TABLE IF EXISTS {:s}".format(self._table_name))
+                tables.remove(self._table_name)
+
+            if self._table_name not in tables:
+                self.logger.info(self._DDL)
+                try:
+                    cursor.execute(self._DDL)
+                except:
+                    pass
+        finally:
+            conn.close()
 
         self._queue_delegate = HBaseQueue(hbase_host,
                                           hbase_port,
@@ -1107,63 +1163,73 @@ class PhoenixFeed(Queue):
             self._queue_delegate.schedule(batch)
 
     def _schedule(self, batch, timestamp):
-        for request, score in batch:
-            domain = request.meta[b'domain']
-            fingerprint = request.meta[b'fingerprint']
-            crontab = request.meta[b'strategy'][b'crontab']
-            depth_limit = request.meta[b'strategy'][b'depth_limit']
-            next_time = timestamp + int(CronTab(crontab).next())
-            slot = request.meta.get(b'slot')
-            if slot is not None:
-                partition_id = self.feed_partitioner.partition(slot, self.feed_partitions)
-            elif type(domain) == dict:
-                partition_id = self.feed_partitioner.partition(domain[b'name'], self.feed_partitions)
-            elif type(domain) == int:
-                partition_id = self.feed_partitioner.partition_by_hash(domain, self.feed_partitions)
-            else:
-                raise TypeError("partitioning key and info isn't provided")
+        conn = connect(self._host, self._port, self._schema)
+        try:
+            cursor = conn.cursor()
+            for request, score in batch:
+                domain = request.meta[b'domain']
+                fingerprint = request.meta[b'fingerprint']
+                crontab = request.meta[b'strategy'][b'crontab']
+                depth_limit = request.meta[b'strategy'][b'depth_limit']
+                next_time = timestamp + int(CronTab(crontab).next())
+                slot = request.meta.get(b'slot')
+                if slot is not None:
+                    partition_id = self.feed_partitioner.partition(slot, self.feed_partitions)
+                elif type(domain) == dict:
+                    partition_id = self.feed_partitioner.partition(domain[b'name'], self.feed_partitions)
+                elif type(domain) == int:
+                    partition_id = self.feed_partitioner.partition_by_hash(domain, self.feed_partitions)
+                else:
+                    raise TypeError("partitioning key and info isn't provided")
 
-            self._op(3, self.cursor.execute, self._SQL_SCHEDULE,
-                     (fingerprint,
-                      partition_id,
-                      norm_url(request.url),
-                      timestamp,
-                      next_time,
-                      crontab,
-                      depth_limit))
+                self._op(3, cursor.execute, self._SQL_SCHEDULE,
+                         (fingerprint,
+                          partition_id,
+                          norm_url(request.url),
+                          timestamp,
+                          next_time,
+                          crontab,
+                          depth_limit))
+        finally:
+            conn.close()
 
     def get_next_requests(self, max_n_requests, partition_id, **kwargs):
-        self._op(3, self.cursor.execute, self._SQL_GET_FEEDS, (partition_id,))
-        feed_requests = []
-        for row in self.cursor.fetchall():
-            fprint = row[0]
-            feed_url = row[1]
-            next_time = row[2]
-            crontab = row[3]
-            depth_limit = row[4]
-            now = int(time())
-            if next_time <= now:
-                request = Request(feed_url)
-                request.meta[b'fingerprint'] = fprint
-                netloc, name, scheme, sld, tld, subdomain = parse_domain_from_url_fast(feed_url)
-                request.meta[b'domain'] = {
-                    b'netloc': to_bytes(netloc),
-                    b'name': to_bytes(name),
-                    b'scheme': to_bytes(scheme),
-                    b'sld': to_bytes(sld),
-                    b'tld': to_bytes(tld),
-                    b'subdomain': to_bytes(subdomain),
-                }
-                request.meta[b'strategy'] = {
-                    b'crontab': crontab,
-                    b'depth_limit': depth_limit
-                }
-                feed_requests.append(request)
-                next_time = now + int(CronTab(crontab).next())
-                self._op(3,
-                         self.cursor.execute,
-                         self._SQL_UPDATE_SCHEDULE,
-                         (fprint, now, next_time))
+        conn = connect(self._host, self._port, self._schema)
+        try:
+            cursor = conn.cursor()
+            self._op(3, cursor.execute, self._SQL_GET_FEEDS, (partition_id,))
+            feed_requests = []
+            for row in cursor.fetchall():
+                fprint = row[0]
+                feed_url = row[1]
+                next_time = row[2]
+                crontab = row[3]
+                depth_limit = row[4]
+                now = int(time())
+                if next_time <= now:
+                    request = Request(feed_url)
+                    request.meta[b'fingerprint'] = fprint
+                    netloc, name, scheme, sld, tld, subdomain = parse_domain_from_url_fast(feed_url)
+                    request.meta[b'domain'] = {
+                        b'netloc': to_bytes(netloc),
+                        b'name': to_bytes(name),
+                        b'scheme': to_bytes(scheme),
+                        b'sld': to_bytes(sld),
+                        b'tld': to_bytes(tld),
+                        b'subdomain': to_bytes(subdomain),
+                    }
+                    request.meta[b'strategy'] = {
+                        b'crontab': crontab,
+                        b'depth_limit': depth_limit
+                    }
+                    feed_requests.append(request)
+                    next_time = now + int(CronTab(crontab).next())
+                    self._op(3,
+                             cursor.execute,
+                             self._SQL_UPDATE_SCHEDULE,
+                             (fprint, now, next_time))
+        finally:
+            conn.close()
 
         if len(feed_requests):
             return feed_requests
@@ -1177,10 +1243,13 @@ class PhoenixFeed(Queue):
         attempt = self._attempt(max_attempt, f, *args)
         # reconnect for non-transient error.
         if attempt > max_attempt - 1:
-            self.conn = connect(self._host, self._port, self._schema)
-            self.cursor = self.conn.cursor()
-            self.logger.info("Reconnecting to %s:%d phoenix query server.", self._host, self._port)
-            self._attempt(int(max_attempt/2), f, *args)
+            conn = connect(self._host, self._port, self._schema)
+            try:
+                cursor = conn.cursor()
+                self.logger.info("Reconnecting to %s:%d phoenix query server.", self._host, self._port)
+                self._attempt(int(max_attempt/2), cursor.execute, *args)
+            finally:
+                conn.close()
 
     def _attempt(self, max_attempt, f, *args):
         attempt = 0
@@ -1188,7 +1257,7 @@ class PhoenixFeed(Queue):
             try:
                 f(*args)
                 break
-            except (socket.error,):
+            except:
                 err, msg, _ = sys.exc_info()
                 self.logger.error("{} {}\n".format(err, msg))
                 self.logger.error(traceback.format_exc())
