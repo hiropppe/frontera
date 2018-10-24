@@ -5,6 +5,7 @@ import hashlib
 import logging
 import phoenixdb
 import phoenixdb.cursor
+import re
 import six
 import socket
 import sys
@@ -475,6 +476,8 @@ class PhoenixState(States):
 
 
 class PhoenixMetadata(Metadata):
+    r_ctype = re.compile(rb'([0-9a-z._+-]+/[0-9a-z._+-]+);?', flags=re.IGNORECASE)
+    r_charset = re.compile(rb'charset="?([0-9a-z-_]+)"?;?', flags=re.IGNORECASE)
 
     def __init__(self, host, port, schema, table_name,
                  drop_all_tables=False, data_block_encoding='DIFF'):
@@ -496,11 +499,11 @@ class PhoenixMetadata(Metadata):
                 "m:seed_fprint" VARCHAR(40),
                 "m:title" VARCHAR,
                 "m:content_type" VARCHAR,
+                "m:charset" VARCHAR,
                 "m:headers" VARBINARY,
                 "m:status_code" UNSIGNED_SMALLINT,
                 "m:signature" VARCHAR(40),
                 "m:depth" UNSIGNED_SMALLINT,
-                "m:score" UNSIGNED_FLOAT,
                 "m:error" VARCHAR(100),
                 "m:created_at" UNSIGNED_LONG,
                 "c:content" VARBINARY
@@ -540,6 +543,7 @@ class PhoenixMetadata(Metadata):
                  "m:netloc_fprint",
                  "m:status_code",
                  "m:content_type",
+                 "m:charset",
                  "m:headers",
                  "m:signature",
                  "m:title",
@@ -547,7 +551,7 @@ class PhoenixMetadata(Metadata):
                  "m:depth",
                  "c:content")
             VALUES
-                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """.format(table=self._table_name)
 
         self.SQL_REQUEST_ERROR = """
@@ -555,13 +559,6 @@ class PhoenixMetadata(Metadata):
                 (url_fprint, "m:url", "m:created_at", "m:error", "m:domain_fprint")
             VALUES
                 (?, ?, ?, ?, ?)
-        """.format(table=self._table_name)
-
-        self.SQL_UPDATE_SCORE = """
-            UPSERT INTO {table}
-                (url_fprint, "m:score")
-            VALUES
-                (?, ?)
         """.format(table=self._table_name)
 
         self.conn = connect(self._host, self._port, self._schema)
@@ -620,8 +617,18 @@ class PhoenixMetadata(Metadata):
         netloc_fprint = response.meta[b'domain'][b'netloc_fingerprint']
         headers = response.headers
         content_type = headers[b'Content-Type'][0] if b'Content-Type' in headers else None
+        ctype = None
+        charset = None
+        if content_type:
+            ctype = self.r_ctype.findall(content_type)
+            charset = self.r_charset.findall(content_type)
+            if ctype:
+                ctype = ctype[0].lower()
+            if charset:
+                charset = charset[0].lower()
+
         title = response.meta[b'title'] if b'title' in response.meta else None
-        body = response.body
+        #body = response.body
         #if any(e in content_type.lower() for e in ('utf8', 'utf-8')):
         #    body = body.decode('utf8')
         #elif any(e in content_type.lower() for e in ('sjis', 'shift-jis', 'shift_jis'))::
@@ -647,7 +654,8 @@ class PhoenixMetadata(Metadata):
                       domain_fprint,
                       netloc_fprint,
                       int(response.status_code),
-                      content_type,
+                      ctype,
+                      charset,
                       packb(headers),
                       signature,
                       title,
@@ -691,10 +699,8 @@ class PhoenixMetadata(Metadata):
                           request.meta[b'redirect_fingerprints'][-1]))
 
     def update_score(self, batch):
-        if not isinstance(batch, dict):
-            raise TypeError('batch should be dict with fingerprint as key, and float score as value')
-        for fprint, (score, url, schedule) in six.iteritems(batch):
-            self._op(2, self.cursor.execute, self.SQL_UPDATE_SCORE, (fprint, score))
+        # never called ?
+        pass
 
     def md5(self, body):
         return to_bytes(hashlib.md5(body).hexdigest())
