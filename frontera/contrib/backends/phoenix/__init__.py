@@ -457,6 +457,7 @@ class PhoenixState(States):
         # reconnect for non-transient error.
         if attempt > max_attempt - 1:
             self.conn = connect(self._host, self._port, self._schema)
+            self.cursor = self.conn.cursor()
             self.logger.info("Reconnecting to %s:%d phoenix query server.", self._host, self._port)
             self._attempt(int(max_attempt/2), f, *args)
 
@@ -710,6 +711,7 @@ class PhoenixMetadata(Metadata):
         # reconnect for non-transient error.
         if attempt > max_attempt - 1:
             self.conn = connect(self._host, self._port, self._schema)
+            self.cursor = self.conn.cursor()
             self.logger.info("Reconnecting to %s:%d phoenix query server.", self._host, self._port)
             self._attempt(int(max_attempt/2), f, *args)
 
@@ -822,6 +824,7 @@ class PhoenixSeed(Seed):
         # reconnect for non-transient error.
         if attempt > max_attempt - 1:
             self.conn = connect(self._host, self._port, self._schema)
+            self.cursor = self.conn.cursor()
             self.logger.info("Reconnecting to %s:%d phoenix query server.", self._host, self._port)
             self._attempt(int(max_attempt/2), f, *args)
 
@@ -1175,6 +1178,7 @@ class PhoenixFeed(Queue):
         # reconnect for non-transient error.
         if attempt > max_attempt - 1:
             self.conn = connect(self._host, self._port, self._schema)
+            self.cursor = self.conn.cursor()
             self.logger.info("Reconnecting to %s:%d phoenix query server.", self._host, self._port)
             self._attempt(int(max_attempt/2), f, *args)
 
