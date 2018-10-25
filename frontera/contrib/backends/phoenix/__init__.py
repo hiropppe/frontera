@@ -121,7 +121,11 @@ class HBaseQueue(Queue):
             schema = {'f': {'max_versions': 1}}
             if use_snappy:
                 schema['f']['compression'] = 'SNAPPY'
-            connection.create_table(self.table_name, schema)
+            try:
+                connection.create_table(self.table_name, schema)
+            except:
+                err, msg, _ = sys.exc_info()
+                self.logger.error("{} {}\n".format(err, msg))
 
         class DumbResponse:
             pass
@@ -400,7 +404,8 @@ class PhoenixState(States):
                 try:
                     cursor.execute(self._DDL)
                 except:
-                    pass
+                    err, msg, _ = sys.exc_info()
+                    self.logger.error("{} {}\n".format(err, msg))
         finally:
             conn.close()
 
@@ -828,7 +833,8 @@ class PhoenixSeed(Seed):
                 try:
                     cursor.execute(self._DDL)
                 except:
-                    pass
+                    err, msg, _ = sys.exc_info()
+                    self.logger.error("{} {}\n".format(err, msg))
         finally:
             conn.close()
 
@@ -1126,7 +1132,8 @@ class PhoenixFeed(Queue):
                 try:
                     cursor.execute(self._DDL)
                 except:
-                    pass
+                    err, msg, _ = sys.exc_info()
+                    self.logger.error("{} {}\n".format(err, msg))
         finally:
             conn.close()
 
