@@ -1216,6 +1216,7 @@ class PhoenixFeed(Queue):
                 if next_time <= now:
                     request = Request(feed_url)
                     request.meta[b'fingerprint'] = fprint
+                    request.meta[b'seed_fingerprint'] = fprint
                     netloc, name, scheme, sld, tld, subdomain = parse_domain_from_url_fast(feed_url)
                     request.meta[b'domain'] = {
                         b'netloc': to_bytes(netloc),
@@ -1223,12 +1224,13 @@ class PhoenixFeed(Queue):
                         b'scheme': to_bytes(scheme),
                         b'sld': to_bytes(sld),
                         b'tld': to_bytes(tld),
-                        b'subdomain': to_bytes(subdomain),
+                        b'subdomain': to_bytes(subdomain)
                     }
                     request.meta[b'strategy'] = {
                         b'crontab': crontab,
                         b'depth_limit': depth_limit
                     }
+                    request.meta[b'score'] = 1.0
                     feed_requests.append(request)
                     next_time = now + int(CronTab(crontab).next())
                     self._op(3,
