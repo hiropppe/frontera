@@ -37,6 +37,7 @@ class BreadthFirstCrawlingStrategy(BaseCrawlingStrategy):
                 req.meta[b'seed_fingerprint'] = req.meta[b'fingerprint']
                 req.meta[b'state'] = States.QUEUED
                 req.meta[b'depth'] = 0
+                req.meta[b'token'] = seeds.get('token', '0')
                 req.meta[b'strategy'] = {
                     b'name': self.name,
                     b'depth_limit': seeds.get('depth_limit', 0)

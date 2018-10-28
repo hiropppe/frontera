@@ -790,13 +790,13 @@ class PhoenixSeed(Seed):
         self._DDL = """
             CREATE TABLE {table} (
                 URL_FPRINT VARCHAR(40) PRIMARY KEY,
-                "s:description" VARCHAR(255),
                 "s:url" VARCHAR,
                 "s:domain" VARCHAR(100),
                 "s:netloc" VARCHAR(100),
                 "s:strategy" VARCHAR(30),
                 "s:depth_limit" UNSIGNED_SMALLINT,
                 "s:partition_id" UNSIGNED_TINYINT,
+                "s:token" VARCHAR(64),
                 "s:created_at" UNSIGNED_LONG
             ) DATA_BLOCK_ENCODING='{data_block_encoding}', VERSIONS={versions}
         """.format(table=self._table_name,
@@ -805,7 +805,7 @@ class PhoenixSeed(Seed):
 
         self._SQL_ADD_SEED = """
             UPSERT INTO {table}
-                (url_fprint, "s:description", "s:url", "s:domain", "s:netloc", "s:strategy", "s:depth_limit", "s:partition_id", "s:created_at")
+                (url_fprint, "s:url", "s:domain", "s:netloc", "s:strategy", "s:depth_limit", "s:partition_id", "s:token", "s:created_at")
             VALUES
                 (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """.format(table=self._table_name)
@@ -852,6 +852,7 @@ class PhoenixSeed(Seed):
                 domain = request.meta[b'domain']
                 strategy = request.meta[b'strategy'][b'name']
                 depth_limit = request.meta[b'strategy'][b'depth_limit']
+                token = request.meta[b'token']
                 slot = request.meta.get(b'slot')
                 if slot is not None:
                     partition_id = self.seed_partitioner.partition(slot, self.seed_partitions)
@@ -864,13 +865,13 @@ class PhoenixSeed(Seed):
 
                 self._op(2, cursor.execute, self._SQL_ADD_SEED,
                          (fprint,
-                          '',
                           url,
                           domain[b'name'],
                           domain[b'netloc'],
                           strategy,
                           depth_limit,
                           partition_id,
+                          token,
                           now))
         finally:
             conn.close()
