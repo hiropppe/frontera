@@ -47,7 +47,6 @@ _pack_functions = {
     'status_code': lambda x: pack('>H', x),
     'state': lambda x: pack('>B', x),
     'error': to_bytes,
-    'domain_fprint': to_bytes,
     'score': lambda x: pack('>f', x),
     'content': to_bytes,
     'headers': packb,
@@ -515,7 +514,6 @@ class PhoenixMetadata(Metadata):
                 "m:url" VARCHAR,
                 "m:domain" VARCHAR(100),
                 "m:netloc" VARCHAR(100),
-                "m:domain_fprint" VARCHAR(40),
                 "m:dest_fprint" VARCHAR(40),
                 "m:seed_fprint" VARCHAR(40),
                 "m:title" VARCHAR,
@@ -536,9 +534,6 @@ class PhoenixMetadata(Metadata):
         self._DDL_IDX_DOMAIN = """
             CREATE INDEX IDX_DOMAIN ON {table} ("m:domain") ASYNC
         """.format(table=self._table_name)
-        self._DDL_IDX_DOMAIN_FPRINT = """
-            CREATE INDEX IDX_DOMAIN_FPRINT ON {table} ("m:domain_fprint") ASYNC
-        """.format(table=self._table_name)
         self._DDL_IDX_SEED_FPRINT = """
             CREATE INDEX IDX_SEED_FPRINT ON {table} ("m:seed_fprint") ASYNC
         """.format(table=self._table_name)
@@ -555,10 +550,9 @@ class PhoenixMetadata(Metadata):
                 "m:url",
                 "m:domain",
                 "m:netloc",
-                "m:created_at",
-                "m:domain_fprint")
+                "m:created_at")
             VALUES
-                (?, ?, ?, ?, ?, ?)
+                (?, ?, ?, ?, ?)
         """.format(table=self._table_name)
 
         self.SQL_ADD_REDIRECT = """
@@ -575,7 +569,6 @@ class PhoenixMetadata(Metadata):
                  "m:domain",
                  "m:netloc",
                  "m:created_at",
-                 "m:domain_fprint",
                  "m:status_code",
                  "m:content_type",
                  "m:charset",
@@ -586,14 +579,14 @@ class PhoenixMetadata(Metadata):
                  "m:depth",
                  "c:content")
             VALUES
-                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """.format(table=self._table_name)
 
         self.SQL_REQUEST_ERROR = """
             UPSERT INTO {table}
-                (url_fprint, "m:url", "m:created_at", "m:error", "m:domain_fprint")
+                (url_fprint, "m:url", "m:created_at", "m:error")
             VALUES
-                (?, ?, ?, ?, ?)
+                (?, ?, ?, ?)
         """.format(table=self._table_name)
 
         conn = connect(self._host, self._port, self._schema)
@@ -659,7 +652,6 @@ class PhoenixMetadata(Metadata):
         domain = response.meta[b'domain'][b'name']
         netloc = response.meta[b'domain'][b'netloc']
         created_at = int(time())
-        domain_fprint = response.meta[b'domain'][b'fingerprint']
         headers = response.headers
         content_type = headers[b'Content-Type'][0] if b'Content-Type' in headers else None
         ctype = None
@@ -700,7 +692,6 @@ class PhoenixMetadata(Metadata):
                           domain,
                           netloc,
                           created_at,
-                          domain_fprint,
                           int(response.status_code),
                           ctype,
                           charset,
