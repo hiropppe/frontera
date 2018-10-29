@@ -969,6 +969,7 @@ class PhoenixBackend(DistributedBackend):
         o = cls(manager)
         o._init_states(manager.settings)
         #o._init_domain_metadata(manager.settings)
+        o._init_seed(manager.settings)
         return o
 
     @classmethod
