@@ -516,7 +516,6 @@ class PhoenixMetadata(Metadata):
                 "m:domain" VARCHAR(100),
                 "m:netloc" VARCHAR(100),
                 "m:domain_fprint" VARCHAR(40),
-                "m:netloc_fprint" VARCHAR(40),
                 "m:dest_fprint" VARCHAR(40),
                 "m:seed_fprint" VARCHAR(40),
                 "m:title" VARCHAR,
@@ -534,6 +533,22 @@ class PhoenixMetadata(Metadata):
                    data_block_encoding=data_block_encoding,
                    versions=2147483647)
 
+        self._DDL_IDX_DOMAIN = """
+            CREATE INDEX IDX_DOMAIN ON {table} ("m:domain") ASYNC
+        """.format(table=self._table_name)
+        self._DDL_IDX_DOMAIN_FPRINT = """
+            CREATE INDEX IDX_DOMAIN_FPRINT ON {table} ("m:domain_fprint") ASYNC
+        """.format(table=self._table_name)
+        self._DDL_IDX_SEED_FPRINT = """
+            CREATE INDEX IDX_SEED_FPRINT ON {table} ("m:seed_fprint") ASYNC
+        """.format(table=self._table_name)
+        self._DDL_IDX_STATUS_CODE = """
+            CREATE INDEX IDX_STATUS_CODE ON {table} ("m:status_code") ASYNC
+        """.format(table=self._table_name)
+        self._DDL_IDX_CREATED_AT = """
+            CREATE INDEX IDX_CREATED_AT ON {table} ("m:created_at") ASYNC
+        """.format(table=self._table_name)
+
         self.SQL_ADD_SEED = """
             UPSERT INTO {table} (
                 URL_FPRINT,
@@ -541,10 +556,9 @@ class PhoenixMetadata(Metadata):
                 "m:domain",
                 "m:netloc",
                 "m:created_at",
-                "m:domain_fprint",
-                "m:netloc_fprint")
+                "m:domain_fprint")
             VALUES
-                (?, ?, ?, ?, ?, ?, ?)
+                (?, ?, ?, ?, ?, ?)
         """.format(table=self._table_name)
 
         self.SQL_ADD_REDIRECT = """
@@ -562,7 +576,6 @@ class PhoenixMetadata(Metadata):
                  "m:netloc",
                  "m:created_at",
                  "m:domain_fprint",
-                 "m:netloc_fprint",
                  "m:status_code",
                  "m:content_type",
                  "m:charset",
@@ -573,7 +586,7 @@ class PhoenixMetadata(Metadata):
                  "m:depth",
                  "c:content")
             VALUES
-                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """.format(table=self._table_name)
 
         self.SQL_REQUEST_ERROR = """
@@ -602,6 +615,11 @@ class PhoenixMetadata(Metadata):
                 self.logger.info(self._DDL)
                 try:
                     cursor.execute(self._DDL)
+                    cursor.execute(self._DDL_IDX_DOMAIN)
+                    cursor.execute(self._DDL_IDX_DOMAIN_FPRINT)
+                    cursor.execute(self._DDL_IDX_SEED_FPRINT)
+                    cursor.execute(self._DDL_IDX_STATUS_CODE)
+                    cursor.execute(self._DDL_IDX_CRATED_AT)
                 except:
                     err, msg, _ = sys.exc_info()
                     self.logger.error("{} {}\n".format(err, msg))
@@ -629,7 +647,6 @@ class PhoenixMetadata(Metadata):
                           seed.meta[b'domain'][b'netloc'],
                           int(time()),
                           seed.meta[b'domain'][b'fingerprint'],
-                          seed.meta[b'domain'][b'netloc_fingerprint'],
                           seed.meta[b'fingerprint'],
                           seed.meta[b'depth']
                           ))
@@ -643,7 +660,6 @@ class PhoenixMetadata(Metadata):
         netloc = response.meta[b'domain'][b'netloc']
         created_at = int(time())
         domain_fprint = response.meta[b'domain'][b'fingerprint']
-        netloc_fprint = response.meta[b'domain'][b'netloc_fingerprint']
         headers = response.headers
         content_type = headers[b'Content-Type'][0] if b'Content-Type' in headers else None
         ctype = None
@@ -685,7 +701,6 @@ class PhoenixMetadata(Metadata):
                           netloc,
                           created_at,
                           domain_fprint,
-                          netloc_fprint,
                           int(response.status_code),
                           ctype,
                           charset,
@@ -717,7 +732,6 @@ class PhoenixMetadata(Metadata):
                           link_domain[b'netloc'],
                           int(time()),
                           link_domain[b'fingerprint'],
-                          link_domain[b'netloc_fingerprint'],
                           link.meta.get(b'seed_fingerprint', None),
                           link.meta.get(b'depth', None)))
         finally:
