@@ -502,7 +502,7 @@ class PhoenixMetadata(Metadata):
     r_charset = re.compile(rb'charset="?([0-9a-z-_]+)"?;?', flags=re.IGNORECASE)
 
     def __init__(self, host, port, schema, table_name,
-                 drop_all_tables=False, data_block_encoding='DIFF'):
+                 drop_all_tables=False, data_block_encoding='FAST_DIFF'):
 
         self.logger = logging.getLogger("phoenix.metadata")
         self._host = host
@@ -794,7 +794,7 @@ class PhoenixMetadata(Metadata):
 class PhoenixSeed(Seed):
 
     def __init__(self, host, port, schema, seed_partitions, table_name,
-                 drop_all_tables=False, data_block_encoding='DIFF'):
+                 drop_all_tables=False, data_block_encoding='FAST_DIFF'):
 
         self.logger = logging.getLogger("phoenix.seed")
         self._host = host
