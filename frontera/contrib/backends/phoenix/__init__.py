@@ -613,7 +613,6 @@ class PhoenixMetadata(Metadata):
                 try:
                     cursor.execute(self._DDL)
                     cursor.execute(self._DDL_IDX_DOMAIN)
-                    cursor.execute(self._DDL_IDX_DOMAIN_FPRINT)
                     cursor.execute(self._DDL_IDX_SEED_FPRINT)
                     cursor.execute(self._DDL_IDX_STATUS_CODE)
                     cursor.execute(self._DDL_IDX_CRATED_AT)
