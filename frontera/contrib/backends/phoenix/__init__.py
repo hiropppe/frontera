@@ -508,6 +508,7 @@ class PhoenixMetadata(Metadata):
         self._port = port
         self._schema = schema.upper()
         self._table_name = table_name.upper()
+        compression = 'SNAPPY' if use_snappy else 'None'
         self._DDL = """
             CREATE TABLE {table} (
                 URL_FPRINT VARCHAR(40) PRIMARY KEY,
@@ -532,21 +533,33 @@ class PhoenixMetadata(Metadata):
             VERSIONS={versions}
         """.format(table=self._table_name,
                    data_block_encoding=data_block_encoding,
-                   compression='SNAPPY' if use_snappy else 'None',
+                   compression=compression,
                    versions=2147483647)
 
         self._DDL_IDX_DOMAIN = """
             CREATE INDEX IDX_DOMAIN ON {table} ("m:domain") ASYNC
-        """.format(table=self._table_name)
+            DATA_BLOCK_ENCODING='{data_block_encoding}', COMPRESSION='{compression}'
+        """.format(table=self._table_name,
+                   data_block_encoding=data_block_encoding,
+                   compression=compression)
         self._DDL_IDX_SEED_FPRINT = """
             CREATE INDEX IDX_SEED_FPRINT ON {table} ("m:seed_fprint") ASYNC
-        """.format(table=self._table_name)
+            DATA_BLOCK_ENCODING='{data_block_encoding}', COMPRESSION='{compression}'
+        """.format(table=self._table_name,
+                   data_block_encoding=data_block_encoding,
+                   compression=compression)
         self._DDL_IDX_STATUS_CODE = """
             CREATE INDEX IDX_STATUS_CODE ON {table} ("m:status_code") ASYNC
-        """.format(table=self._table_name)
+            DATA_BLOCK_ENCODING='{data_block_encoding}', COMPRESSION='{compression}'
+        """.format(table=self._table_name,
+                   data_block_encoding=data_block_encoding,
+                   compression=compression)
         self._DDL_IDX_CREATED_AT = """
             CREATE INDEX IDX_CREATED_AT ON {table} ("m:created_at") ASYNC
-        """.format(table=self._table_name)
+            DATA_BLOCK_ENCODING='{data_block_encoding}', COMPRESSION='{compression}'
+        """.format(table=self._table_name,
+                   data_block_encoding=data_block_encoding,
+                   compression=compression)
 
         self.SQL_ADD_SEED = """
             UPSERT INTO {table} (
