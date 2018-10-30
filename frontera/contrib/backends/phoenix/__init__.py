@@ -606,6 +606,14 @@ class PhoenixMetadata(Metadata):
                 (?, ?, ?, ?)
         """.format(table=self._table_name)
 
+        self.SQL_GET_FOR_UPDATE_CONTENT = """
+            SELECT URL_FPRINT, "m:signature" FROM {table} WHERE URL_FPRINT = ?
+        """.format(table=self._table_name)
+
+        self.SQL_GET_FOR_UPDATE = """
+            SELECT URL_FPRINT FROM {table} WHERE URL_FPRINT = ?
+        """.format(table=self._table_name)
+
         conn = connect(self._host, self._port, self._schema)
         try:
             cursor = conn.cursor()
@@ -645,6 +653,8 @@ class PhoenixMetadata(Metadata):
         pass
 
     def add_seeds(self, seeds):
+        pass
+        """
         conn = connect(self._host, self._port, self._schema)
         try:
             cursor = conn.cursor()
@@ -661,6 +671,7 @@ class PhoenixMetadata(Metadata):
                           ))
         finally:
             conn.close()
+        """
 
     def page_crawled(self, response):
         fprint = response.meta[b'fingerprint']
@@ -681,11 +692,6 @@ class PhoenixMetadata(Metadata):
                 charset = charsets[0].lower()
 
         title = response.meta[b'title'] if b'title' in response.meta else None
-        #body = response.body
-        #if any(e in content_type.lower() for e in ('utf8', 'utf-8')):
-        #    body = body.decode('utf8')
-        #elif any(e in content_type.lower() for e in ('sjis', 'shift-jis', 'shift_jis'))::
-        #    body = body.decode('sjis')
         signature = self.md5(response.body)
         redirect_urls = response.request.meta.get(b'redirect_urls')
         redirect_fprints = response.request.meta.get(b'redirect_fingerprints')
@@ -693,34 +699,44 @@ class PhoenixMetadata(Metadata):
         conn = connect(self._host, self._port, self._schema)
         try:
             cursor = conn.cursor()
-            if redirect_urls:
-                for url, fprint in zip(redirect_urls, redirect_fprints):
-                    self._op(2, cursor.execute, self.SQL_ADD_REDIRECT,
-                             (fprint,
-                              norm_url(url),
-                              int(time()),
-                              redirect_fprints[-1]))
 
-            try:
-                self._op(2, cursor.execute, self.SQL_PAGE_CRAWLED,
-                         (fprint,
-                          url,
-                          domain,
-                          netloc,
-                          created_at,
-                          int(response.status_code),
-                          ctype,
-                          charset,
-                          packb(headers),
-                          signature,
-                          title,
-                          response.meta[b'seed_fingerprint'],
-                          response.meta[b'depth'],
-                          response.body))
-            except ValueError:
-                self.logger.error("Failed to persist fetched data. fprint={}, url={}".format(fprint, url))
-                err, msg, _ = sys.exc_info()
-                self.logger.error("{} {}\n".format(err, msg))
+            prev_signature = None
+            self._op(2, cursor.execute, self.SQL_GET_FOR_UPDATE_CONTENT, (fprint,))
+            data = cursor.fetchone()
+            if data:
+                prev_signature = data[1]
+            else:
+                # tentatively insert only first time.
+                if redirect_urls:
+                    for url, fprint in zip(redirect_urls, redirect_fprints):
+                        self._op(2, cursor.execute, self.SQL_ADD_REDIRECT,
+                                 (fprint,
+                                  norm_url(url),
+                                  int(time()),
+                                  redirect_fprints[-1]))
+
+            if prev_signature != signature:
+                try:
+                    self._op(2, cursor.execute, self.SQL_PAGE_CRAWLED,
+                             (fprint,
+                              url,
+                              domain,
+                              netloc,
+                              created_at,
+                              int(response.status_code),
+                              ctype,
+                              charset,
+                              packb(headers),
+                              signature,
+                              title,
+                              response.meta[b'seed_fingerprint'],
+                              response.meta[b'depth'],
+                              response.body))
+                except ValueError:
+                    self.logger.error("Failed to persist fetched data. fprint={}, url={}".format(fprint, url))
+                    err, msg, _ = sys.exc_info()
+                    self.logger.error("{} {}\n".format(err, msg))
+
         finally:
             conn.close()
 
@@ -732,15 +748,17 @@ class PhoenixMetadata(Metadata):
             for link in links:
                 links_dict[link.meta[b'fingerprint']] = (link, link.url, link.meta[b'domain'])
             for link_fingerprint, (link, link_url, link_domain) in six.iteritems(links_dict):
-                self._op(2, cursor.execute, self.SQL_ADD_SEED,
-                         (link_fingerprint,
-                          norm_url(link_url),
-                          link_domain[b'name'],
-                          link_domain[b'netloc'],
-                          int(time()),
-                          link_domain[b'fingerprint'],
-                          link.meta.get(b'seed_fingerprint', None),
-                          link.meta.get(b'depth', None)))
+                self._op(2, cursor.execute, self.SQL_GET_FOR_UPDATE, (link_fingerprint,))
+                if not cursor.fetchone():
+                    self._op(2, cursor.execute, self.SQL_ADD_SEED,
+                             (link_fingerprint,
+                              norm_url(link_url),
+                              link_domain[b'name'],
+                              link_domain[b'netloc'],
+                              int(time()),
+                              link_domain[b'fingerprint'],
+                              link.meta.get(b'seed_fingerprint', None),
+                              link.meta.get(b'depth', None)))
         finally:
             conn.close()
 
@@ -748,19 +766,21 @@ class PhoenixMetadata(Metadata):
         conn = connect(self._host, self._port, self._schema)
         try:
             cursor = conn.cursor()
-            self._op(2, cursor.execute, self.SQL_REQUEST_ERROR,
-                     (request.meta[b'fingerprint'],
-                      norm_url(request.url),
-                      int(time()),
-                      error,
-                      request.meta[b'domain'][b'fingerprint']))
-            if b'redirect_urls' in request.meta:
-                for url, fprint in zip(request.meta[b'redirect_urls'], request.meta[b'redirect_fingerprints']):
-                    self._op(2, cursor.execute, self.SQL_ADD_REDIRECT,
-                             (fprint,
-                              norm_url(url),
-                              int(time()),
-                              request.meta[b'redirect_fingerprints'][-1]))
+            self._op(2, cursor.execute, self.SQL_GET_FOR_UPDATE, (request.meta[b'fingerprint'],))
+            if not cursor.fetchone():
+                self._op(2, cursor.execute, self.SQL_REQUEST_ERROR,
+                         (request.meta[b'fingerprint'],
+                          norm_url(request.url),
+                          int(time()),
+                          error,
+                          request.meta[b'domain'][b'fingerprint']))
+                if b'redirect_urls' in request.meta:
+                    for url, fprint in zip(request.meta[b'redirect_urls'], request.meta[b'redirect_fingerprints']):
+                        self._op(2, cursor.execute, self.SQL_ADD_REDIRECT,
+                                 (fprint,
+                                  norm_url(url),
+                                  int(time()),
+                                  request.meta[b'redirect_fingerprints'][-1]))
         finally:
             conn.close()
 
