@@ -374,7 +374,7 @@ class PhoenixState(States):
             CREATE TABLE {table} (
                 URL_FPRINT VARCHAR(40) PRIMARY KEY,
                 "s:state" UNSIGNED_TINYINT
-            ) VERSIONS={versions}
+            ) VERSIONS={versions}, BLOOMFILTER='ROW', IN_MEMORY='true'
         """.format(table=self._table_name, versions=1)
 
         self._SQL_UPDATE_STATE = """
@@ -501,7 +501,7 @@ class PhoenixMetadata(Metadata):
     r_charset = re.compile(rb'charset="?([0-9a-z-_]+)"?;?', flags=re.IGNORECASE)
 
     def __init__(self, host, port, schema, table_name,
-                 drop_all_tables=False, data_block_encoding='FAST_DIFF'):
+                 drop_all_tables=False, use_snappy=True, data_block_encoding='FAST_DIFF'):
 
         self.logger = logging.getLogger("phoenix.metadata")
         self._host = host
@@ -526,9 +526,13 @@ class PhoenixMetadata(Metadata):
                 "m:error" VARCHAR(100),
                 "m:created_at" UNSIGNED_LONG,
                 "c:content" VARBINARY
-            ) DATA_BLOCK_ENCODING='{data_block_encoding}', VERSIONS={versions}
+            )
+            DATA_BLOCK_ENCODING='{data_block_encoding}',
+            COMPRESSION='{compression}',
+            VERSIONS={versions}
         """.format(table=self._table_name,
                    data_block_encoding=data_block_encoding,
+                   compression='SNAPPY' if use_snappy else 'None',
                    versions=2147483647)
 
         self._DDL_IDX_DOMAIN = """
@@ -785,7 +789,7 @@ class PhoenixMetadata(Metadata):
 class PhoenixSeed(Seed):
 
     def __init__(self, host, port, schema, seed_partitions, table_name,
-                 drop_all_tables=False, data_block_encoding='FAST_DIFF'):
+                 drop_all_tables=False, use_snappy=True, data_block_encoding='FAST_DIFF'):
 
         self.logger = logging.getLogger("phoenix.seed")
         self._host = host
@@ -803,9 +807,13 @@ class PhoenixSeed(Seed):
                 "s:partition_id" UNSIGNED_TINYINT,
                 "s:token" VARCHAR(64),
                 "s:created_at" UNSIGNED_LONG
-            ) DATA_BLOCK_ENCODING='{data_block_encoding}', VERSIONS={versions}
+            )
+            DATA_BLOCK_ENCODING='{data_block_encoding}',
+            COMPRESSION='{compression}',
+            VERSIONS={versions}
         """.format(table=self._table_name,
                    data_block_encoding=data_block_encoding,
+                   compression='SNAPPY' if use_snappy else 'None',
                    versions=1)
 
         self._SQL_ADD_SEED = """
@@ -954,6 +962,7 @@ class PhoenixBackend(DistributedBackend):
         self._metadata = PhoenixMetadata(self._host, self._port, self._schema,
                                          settings.get('PHOENIX_METADATA_TABLE'),
                                          settings.get('PHOENIX_DROP_ALL_TABLES'),
+                                         settings.get('PHOENIX_USE_SNAPPY'),
                                          settings.get('PHOENIX_DATA_BLOCK_ENCODING'))
 
     def _init_domain_metadata(self, settings):
@@ -967,6 +976,7 @@ class PhoenixBackend(DistributedBackend):
         self._seed = PhoenixSeed(self._host, self._port, self._schema, self._queue_partitions,
                                  settings.get('PHOENIX_SEED_TABLE'),
                                  settings.get('PHOENIX_DROP_ALL_TABLES'),
+                                 settings.get('PHOENIX_USE_SNAPPY'),
                                  settings.get('PHOENIX_DATA_BLOCK_ENCODING'))
 
     @classmethod
