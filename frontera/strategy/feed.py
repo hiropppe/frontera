@@ -67,22 +67,24 @@ class FeedCrawlingStrategy(BaseCrawlingStrategy):
         response.meta[b'state'] = States.CRAWLED
 
     def filter_extracted_links(self, request, links):
-        def accept(link):
+        depth_limit = request.meta[b'strategy'][b'depth_limit']
+        if depth_limit >= 0 and depth_limit < request.meta[b'depth'] + 1:
+            self.logger.info('Depth limit exceeded. {:s} (depth: {:d} > limit: {:d})'
+                             .format(request.url,
+                                     request.meta[b'depth'] + 1,
+                                     request.meta[b'strategy'][b'depth_limit']))
+            return []
+
+        def update(link):
             link.meta[b'depth'] = request.meta[b'depth'] + 1
             link.meta[b'strategy'] = request.meta[b'strategy']
             if b'seed_fingerprint' in request.meta:
                 link.meta[b'seed_fingerprint'] = request.meta[b'seed_fingerprint']
             else:
                 link.meta[b'seed_fingerprint'] = request.meta[b'fingerprint']
-            if (link.meta[b'strategy'][b'depth_limit'] < 0 or
-                    link.meta[b'depth'] <= link.meta[b'strategy'][b'depth_limit']):
-                return True
-            else:
-                self.logger.info('Depth limit exceeded. {:s} (depth: {:d} > limit: {:d})'
-                                 .format(link.url, link.meta[b'depth'], link.meta[b'strategy'][b'depth_limit']))
-                return False
+            return True
 
-        return list(filter(accept, links))
+        return list(filter(update, links))
 
     def links_extracted(self, request, links):
         for link in links:
