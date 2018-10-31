@@ -669,7 +669,8 @@ class PhoenixMetadata(Metadata):
                     cursor.execute(self._DDL_IDX_NETCLOC)
                     cursor.execute(self._DDL_IDX_SEED_FPRINT)
                     cursor.execute(self._DDL_IDX_STATUS_CODE)
-                    cursor.execute(self._DDL_IDX_CRATED_AT)
+                    cursor.execute(self._DDL_IDX_CREATED_AT)
+                    cursor.execute(self._DDL_IDX_FETCHED_AT)
                 except:
                     err, msg, _ = sys.exc_info()
                     self.logger.error("{} {}\n".format(err, msg))
