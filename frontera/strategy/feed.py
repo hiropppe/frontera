@@ -74,7 +74,7 @@ class FeedCrawlingStrategy(BaseCrawlingStrategy):
                 link.meta[b'seed_fingerprint'] = request.meta[b'seed_fingerprint']
             else:
                 link.meta[b'seed_fingerprint'] = request.meta[b'fingerprint']
-            if (link.meta[b'strategy'][b'depth_limit'] == 0 or
+            if (link.meta[b'strategy'][b'depth_limit'] < 0 or
                     link.meta[b'depth'] <= link.meta[b'strategy'][b'depth_limit']):
                 return True
             else:

@@ -99,7 +99,7 @@ class DomainCrawlingStrategy(BaseCrawlingStrategy):
                 link.meta[b'seed_fingerprint'] = request.meta[b'fingerprint']
             if link.meta[b'state'] is States.NOT_CRAWLED:
                 link.meta[b'state'] = States.QUEUED
-                if link.meta[b'strategy'][b'depth_limit'] == 0 or link.meta[b'depth'] <= link.meta[b'strategy'][b'depth_limit']:
+                if link.meta[b'strategy'][b'depth_limit'] < 0 or link.meta[b'depth'] <= link.meta[b'strategy'][b'depth_limit']:
                     self.schedule(link, self.get_score(link))
                 else:
                     self.logger.info('Depth limit exceeded. {:s} (depth: {:d} > limit: {:d})'

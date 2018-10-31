@@ -580,9 +580,10 @@ class PhoenixMetadata(Metadata):
                 "m:url",
                 "m:domain",
                 "m:netloc",
-                "m:created_at")
+                "m:created_at",
+                "m:depth")
             VALUES
-                (?, ?, ?, ?, ?)
+                (?, ?, ?, ?, ?, ?)
         """.format(table=self._table_name)
 
         self.SQL_ADD_REDIRECT = """
@@ -788,6 +789,9 @@ class PhoenixMetadata(Metadata):
             conn.close()
 
     def links_extracted(self, request, links):
+        if request.meta[b'strategy'][b'depth_limit'] < request.meta[b'depth'] + 1:
+            return
+
         conn = connect(self._host, self._port, self._schema)
         try:
             cursor = conn.cursor()
@@ -803,9 +807,7 @@ class PhoenixMetadata(Metadata):
                               link_domain[b'name'],
                               link_domain[b'netloc'],
                               int(time()),
-                              link_domain[b'fingerprint'],
-                              link.meta.get(b'seed_fingerprint', None),
-                              link.meta.get(b'depth', None)))
+                              request.meta[b'depth'] + 1))
         finally:
             conn.close()
 
@@ -819,8 +821,7 @@ class PhoenixMetadata(Metadata):
                          (request.meta[b'fingerprint'],
                           norm_url(request.url),
                           int(time()),
-                          error,
-                          request.meta[b'domain'][b'fingerprint']))
+                          error))
                 if b'redirect_urls' in request.meta:
                     for url, fprint in zip(request.meta[b'redirect_urls'], request.meta[b'redirect_fingerprints']):
                         self._op(2, cursor.execute, self.SQL_ADD_REDIRECT,
