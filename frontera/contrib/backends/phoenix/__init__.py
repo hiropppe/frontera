@@ -588,9 +588,9 @@ class PhoenixMetadata(Metadata):
 
         self.SQL_ADD_REDIRECT = """
             UPSERT INTO {table}
-                (URL_FPRINT, "m:url", "m:created_at", "m:dest_fprint")
+                (URL_FPRINT, "m:url", "m:created_at", "m:dest_fprint", "m:depth")
             VALUES
-                (?, ?, ?, ?)
+                (?, ?, ?, ?, ?)
         """.format(table=self._table_name)
 
         self.SQL_PAGE_CRAWLED = """
@@ -633,9 +633,9 @@ class PhoenixMetadata(Metadata):
 
         self.SQL_REQUEST_ERROR = """
             UPSERT INTO {table}
-                (url_fprint, "m:url", "m:created_at", "m:error")
+                (url_fprint, "m:url", "m:created_at", "m:depth", "m:error")
             VALUES
-                (?, ?, ?, ?)
+                (?, ?, ?, ?, ?)
         """.format(table=self._table_name)
 
         self.SQL_GET_FOR_UPDATE_CONTENT = """
@@ -762,7 +762,8 @@ class PhoenixMetadata(Metadata):
                                  (fprint,
                                   norm_url(url),
                                   int(time()),
-                                  redirect_fprints[-1]))
+                                  redirect_fprints[-1],
+                                  response.meta[b'depth']))
                 try:
                     self._op(2, cursor.execute, self.SQL_PAGE_CRAWLED,
                              (fprint,
@@ -821,6 +822,7 @@ class PhoenixMetadata(Metadata):
                          (request.meta[b'fingerprint'],
                           norm_url(request.url),
                           int(time()),
+                          request.meta[b'depth'] + 1,
                           error))
                 if b'redirect_urls' in request.meta:
                     for url, fprint in zip(request.meta[b'redirect_urls'], request.meta[b'redirect_fingerprints']):
@@ -828,7 +830,8 @@ class PhoenixMetadata(Metadata):
                                  (fprint,
                                   norm_url(url),
                                   int(time()),
-                                  request.meta[b'redirect_fingerprints'][-1]))
+                                  request.meta[b'redirect_fingerprints'][-1],
+                                  request.meta[b'depth'] + 1))
         finally:
             conn.close()
 
