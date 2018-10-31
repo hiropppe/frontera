@@ -526,6 +526,7 @@ class PhoenixMetadata(Metadata):
                 "m:depth" UNSIGNED_SMALLINT,
                 "m:error" VARCHAR(100),
                 "m:created_at" UNSIGNED_LONG,
+                "m:fetched_at" UNSIGNED_LONG,
                 "c:content" VARBINARY
             )
             DATA_BLOCK_ENCODING='{data_block_encoding}',
@@ -538,6 +539,12 @@ class PhoenixMetadata(Metadata):
 
         self._DDL_IDX_DOMAIN = """
             CREATE INDEX IDX_DOMAIN ON {table} ("m:domain") ASYNC
+            DATA_BLOCK_ENCODING='{data_block_encoding}', COMPRESSION='{compression}'
+        """.format(table=self._table_name,
+                   data_block_encoding=data_block_encoding,
+                   compression=compression)
+        self._DDL_IDX_NETCLOC = """
+            CREATE INDEX IDX_NETLOC ON {table} ("m:netloc") ASYNC
             DATA_BLOCK_ENCODING='{data_block_encoding}', COMPRESSION='{compression}'
         """.format(table=self._table_name,
                    data_block_encoding=data_block_encoding,
@@ -556,6 +563,12 @@ class PhoenixMetadata(Metadata):
                    compression=compression)
         self._DDL_IDX_CREATED_AT = """
             CREATE INDEX IDX_CREATED_AT ON {table} ("m:created_at") ASYNC
+            DATA_BLOCK_ENCODING='{data_block_encoding}', COMPRESSION='{compression}'
+        """.format(table=self._table_name,
+                   data_block_encoding=data_block_encoding,
+                   compression=compression)
+        self._DDL_IDX_FETCHED_AT = """
+            CREATE INDEX IDX_FETCHED_AT ON {table} ("m:fetched_at") ASYNC
             DATA_BLOCK_ENCODING='{data_block_encoding}', COMPRESSION='{compression}'
         """.format(table=self._table_name,
                    data_block_encoding=data_block_encoding,
@@ -586,6 +599,7 @@ class PhoenixMetadata(Metadata):
                  "m:domain",
                  "m:netloc",
                  "m:created_at",
+                 "m:fetched_at",
                  "m:status_code",
                  "m:content_type",
                  "m:charset",
@@ -596,7 +610,24 @@ class PhoenixMetadata(Metadata):
                  "m:depth",
                  "c:content")
             VALUES
-                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """.format(table=self._table_name)
+
+        self.SQL_PAGE_CRAWLED_UPDATE = """
+            UPSERT INTO {table} (
+                 URL_FPRINT,
+                 "m:fetched_at",
+                 "m:status_code",
+                 "m:content_type",
+                 "m:charset",
+                 "m:headers",
+                 "m:signature",
+                 "m:title",
+                 "m:seed_fprint",
+                 "m:depth",
+                 "c:content")
+            VALUES
+                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """.format(table=self._table_name)
 
         self.SQL_REQUEST_ERROR = """
@@ -634,6 +665,7 @@ class PhoenixMetadata(Metadata):
                 try:
                     cursor.execute(self._DDL)
                     cursor.execute(self._DDL_IDX_DOMAIN)
+                    cursor.execute(self._DDL_IDX_NETCLOC)
                     cursor.execute(self._DDL_IDX_SEED_FPRINT)
                     cursor.execute(self._DDL_IDX_STATUS_CODE)
                     cursor.execute(self._DDL_IDX_CRATED_AT)
@@ -678,7 +710,7 @@ class PhoenixMetadata(Metadata):
         url = norm_url(response.url)
         domain = response.meta[b'domain'][b'name']
         netloc = response.meta[b'domain'][b'netloc']
-        created_at = int(time())
+        now = int(time())
         headers = response.headers
         content_type = headers[b'Content-Type'][0] if b'Content-Type' in headers else None
         ctype = None
@@ -700,11 +732,27 @@ class PhoenixMetadata(Metadata):
         try:
             cursor = conn.cursor()
 
-            prev_signature = None
             self._op(2, cursor.execute, self.SQL_GET_FOR_UPDATE_CONTENT, (fprint,))
             data = cursor.fetchone()
             if data:
-                prev_signature = data[1]
+                if data[1] != signature:
+                    try:
+                        self._op(2, cursor.execute, self.SQL_PAGE_CRAWLED_UPDATE,
+                                 (fprint,
+                                  now,
+                                  int(response.status_code),
+                                  ctype,
+                                  charset,
+                                  packb(headers),
+                                  signature,
+                                  title,
+                                  response.meta[b'seed_fingerprint'],
+                                  response.meta[b'depth'],
+                                  response.body))
+                    except ValueError:
+                        self.logger.error("Failed to persist (update) fetched data. fprint={}, url={}".format(fprint, url))
+                        err, msg, _ = sys.exc_info()
+                        self.logger.error("{} {}\n".format(err, msg))
             else:
                 # tentatively insert only first time.
                 if redirect_urls:
@@ -714,15 +762,14 @@ class PhoenixMetadata(Metadata):
                                   norm_url(url),
                                   int(time()),
                                   redirect_fprints[-1]))
-
-            if prev_signature != signature:
                 try:
                     self._op(2, cursor.execute, self.SQL_PAGE_CRAWLED,
                              (fprint,
                               url,
                               domain,
                               netloc,
-                              created_at,
+                              now,
+                              now,
                               int(response.status_code),
                               ctype,
                               charset,
@@ -733,7 +780,7 @@ class PhoenixMetadata(Metadata):
                               response.meta[b'depth'],
                               response.body))
                 except ValueError:
-                    self.logger.error("Failed to persist fetched data. fprint={}, url={}".format(fprint, url))
+                    self.logger.error("Failed to persist (insert) fetched data. fprint={}, url={}".format(fprint, url))
                     err, msg, _ = sys.exc_info()
                     self.logger.error("{} {}\n".format(err, msg))
 
