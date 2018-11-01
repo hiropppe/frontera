@@ -23,6 +23,7 @@ class DomainCrawlingStrategy(BaseCrawlingStrategy):
             if req.meta[b'state'] is States.NOT_CRAWLED:
                 req.meta[b'state'] = States.QUEUED
                 req.meta[b'depth'] = 0
+                req.meta[b'token'] = '0'
                 req.meta[b'strategy'] = {
                     b'name': 'narrow',
                     b'depth_limit': 0,
@@ -50,6 +51,7 @@ class DomainCrawlingStrategy(BaseCrawlingStrategy):
                 req.meta[b'seed_fingerprint'] = req.meta[b'fingerprint']
                 req.meta[b'state'] = States.QUEUED
                 req.meta[b'depth'] = 0
+                req.meta[b'token'] = seeds.get('token', '0')
                 req.meta[b'strategy'] = {
                     b'name': 'narrow',
                     b'depth_limit': seeds.get('depth_limit', 0),

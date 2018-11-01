@@ -30,6 +30,7 @@ class FeedCrawlingStrategy(BaseCrawlingStrategy):
             #    }
             #    self.schedule(req)
             req.meta[b'depth'] = 0
+            req.meta[b'token'] = '0'
             req.meta[b'feed'] = True
             req.meta[b'strategy'] = {
                 b'name': 'feed',
@@ -55,6 +56,7 @@ class FeedCrawlingStrategy(BaseCrawlingStrategy):
             #    self.schedule(req)
             req.meta[b'seed_fingerprint'] = req.meta[b'fingerprint']
             req.meta[b'depth'] = 0
+            req.meta[b'token'] = seeds.get('token', '0')
             req.meta[b'feed'] = True
             req.meta[b'strategy'] = {
                 b'name': 'feed',

@@ -22,6 +22,7 @@ class BreadthFirstCrawlingStrategy(BaseCrawlingStrategy):
             if req.meta[b'state'] is States.NOT_CRAWLED:
                 req.meta[b'state'] = States.QUEUED
                 req.meta[b'depth'] = 0
+                req.meta[b'token'] = '0'
                 req.meta[b'strategy'] = {
                     b'name': self.name,
                     b'depth_limit': 0
