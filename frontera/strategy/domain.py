@@ -25,7 +25,7 @@ class DomainCrawlingStrategy(BaseCrawlingStrategy):
                 req.meta[b'depth'] = 0
                 req.meta[b'token'] = '0'
                 req.meta[b'strategy'] = {
-                    b'name': 'narrow',
+                    b'name': 'domain',
                     b'depth_limit': 0,
                     b'subdomain': True,
                     b'path_aware': False
@@ -53,7 +53,7 @@ class DomainCrawlingStrategy(BaseCrawlingStrategy):
                 req.meta[b'depth'] = 0
                 req.meta[b'token'] = seeds.get('token', '0')
                 req.meta[b'strategy'] = {
-                    b'name': 'narrow',
+                    b'name': 'domain',
                     b'depth_limit': seeds.get('depth_limit', 0),
                     b'subdomain': subdomain,
                     b'path_aware': path_aware,
@@ -82,6 +82,13 @@ class DomainCrawlingStrategy(BaseCrawlingStrategy):
             url_patterns.append(re.compile(url_pattern))
 
         def matches(link):
+            link.meta[b'depth'] = request.meta[b'depth'] + 1
+            link.meta[b'strategy'] = request.meta[b'strategy']
+            if b'seed_fingerprint' in request.meta:
+                link.meta[b'seed_fingerprint'] = request.meta[b'seed_fingerprint']
+            else:
+                link.meta[b'seed_fingerprint'] = request.meta[b'fingerprint']
+
             if url_patterns:
                 if any(url_pattern.fullmatch(link.url) for url_pattern in url_patterns):
                     return True
@@ -90,9 +97,9 @@ class DomainCrawlingStrategy(BaseCrawlingStrategy):
             else:
                 link_domain = link.meta[b'domain']
                 link_path = urlparse(link.url).path
-                if ((req_domain[b'name'] != link_domain[b'name']) or
-                        (strategy[b'path_aware'] and link_path.startswith(strategy[b'seed_path']) is False) or
-                        (strategy[b'subdomain'] and req_domain[b'subdomain'] != link_domain[b'subdomain'])):
+                if ((req_domain[b'name'] != link_domain[b'name'])
+                        or (strategy[b'path_aware'] and link_path.startswith(strategy[b'seed_path']) is False)
+                        or (strategy[b'subdomain'] and req_domain[b'subdomain'] != link_domain[b'subdomain'])):
                     return False
                 else:
                     return True
