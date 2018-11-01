@@ -1279,7 +1279,10 @@ class PhoenixFeed(Queue):
                 fingerprint = request.meta[b'fingerprint']
                 crontab = request.meta[b'strategy'][b'crontab']
                 depth_limit = request.meta[b'strategy'][b'depth_limit']
-                next_time = timestamp + int(CronTab(crontab).next())
+                if b'token' in request.meta:
+                    next_time = timestamp
+                else:
+                    next_time = timestamp + int(CronTab(crontab).next())
                 slot = request.meta.get(b'slot')
                 if slot is not None:
                     partition_id = self.feed_partitioner.partition(slot, self.feed_partitions)
