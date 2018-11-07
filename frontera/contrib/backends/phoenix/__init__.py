@@ -99,7 +99,7 @@ class LRUCacheWithStats(LRUCache):
 class HBaseQueue(Queue):
     GET_RETRIES = 3
 
-    def __init__(self, host, port, namespace, partitions, table_name, drop=False, use_snappy=False, use_framed_compact=False):
+    def __init__(self, host, port, namespace, partitions, table_name, drop=False, compression='NONE', use_framed_compact=False):
         self.logger = logging.getLogger("hbase.queue")
         self._host = host
         self._port = port
@@ -118,8 +118,7 @@ class HBaseQueue(Queue):
 
         if self.table_name not in tables:
             schema = {'f': {'max_versions': 1}}
-            if use_snappy:
-                schema['f']['compression'] = 'SNAPPY'
+            schema['f']['compression'] = compression
             try:
                 connection.create_table(self.table_name, schema)
             except:
@@ -501,14 +500,13 @@ class PhoenixMetadata(Metadata):
     r_charset = re.compile(rb'charset="?([0-9a-z-_]+)"?;?', flags=re.IGNORECASE)
 
     def __init__(self, host, port, schema, table_name,
-                 drop_all_tables=False, use_snappy=True, data_block_encoding='FAST_DIFF'):
+                 drop_all_tables=False, compression='NONE', data_block_encoding='FAST_DIFF'):
 
         self.logger = logging.getLogger("phoenix.metadata")
         self._host = host
         self._port = port
         self._schema = schema.upper()
         self._table_name = table_name.upper()
-        compression = 'SNAPPY' if use_snappy else 'None'
         self._DDL = """
             CREATE TABLE {table} (
                 URL_FPRINT VARCHAR(40) PRIMARY KEY,
@@ -628,7 +626,7 @@ class PhoenixMetadata(Metadata):
                     cursor.execute(self._DDL_IDX_DOMAIN)
                     cursor.execute(self._DDL_IDX_SEED_FPRINT)
                     cursor.execute(self._DDL_IDX_STATUS_CODE)
-                    cursor.execute(self._DDL_IDX_CRATED_AT)
+                    cursor.execute(self._DDL_IDX_CREATED_AT)
                 except:
                     err, msg, _ = sys.exc_info()
                     self.logger.error("{} {}\n".format(err, msg))
@@ -801,7 +799,7 @@ class PhoenixMetadata(Metadata):
 class PhoenixSeed(Seed):
 
     def __init__(self, host, port, schema, seed_partitions, table_name,
-                 drop_all_tables=False, use_snappy=True, data_block_encoding='FAST_DIFF'):
+                 drop_all_tables=False, compression='NONE', data_block_encoding='FAST_DIFF'):
 
         self.logger = logging.getLogger("phoenix.seed")
         self._host = host
@@ -825,7 +823,7 @@ class PhoenixSeed(Seed):
             VERSIONS={versions}
         """.format(table=self._table_name,
                    data_block_encoding=data_block_encoding,
-                   compression='SNAPPY' if use_snappy else 'None',
+                   compression=compression,
                    versions=1)
 
         self._SQL_ADD_SEED = """
@@ -967,14 +965,14 @@ class PhoenixBackend(DistributedBackend):
         self._queue = HBaseQueue(self._hbase_host, self._hbase_port, self._hbase_namespace, self._queue_partitions,
                                  settings.get('HBASE_QUEUE_TABLE'),
                                  settings.get('HBASE_DROP_ALL_TABLES'),
-                                 settings.get('HBASE_USE_SNAPPY'),
+                                 settings.get('HBASE_COMPRESSION'),
                                  settings.get('HBASE_USE_FRAMED_COMPACT'))
 
     def _init_metadata(self, settings):
         self._metadata = PhoenixMetadata(self._host, self._port, self._schema,
                                          settings.get('PHOENIX_METADATA_TABLE'),
                                          settings.get('PHOENIX_DROP_ALL_TABLES'),
-                                         settings.get('PHOENIX_USE_SNAPPY'),
+                                         settings.get('PHOENIX_COMPRESSION'),
                                          settings.get('PHOENIX_DATA_BLOCK_ENCODING'))
 
     def _init_domain_metadata(self, settings):
@@ -988,7 +986,7 @@ class PhoenixBackend(DistributedBackend):
         self._seed = PhoenixSeed(self._host, self._port, self._schema, self._queue_partitions,
                                  settings.get('PHOENIX_SEED_TABLE'),
                                  settings.get('PHOENIX_DROP_ALL_TABLES'),
-                                 settings.get('PHOENIX_USE_SNAPPY'),
+                                 settings.get('PHOENIX_COMPRESSION'),
                                  settings.get('PHOENIX_DATA_BLOCK_ENCODING'))
 
     @classmethod
@@ -1090,7 +1088,7 @@ class PhoenixFeed(Queue):
 
     def __init__(self, phx_host, phx_port, phx_schema, feed_partitions, feed_table_name,
                  hbase_host, hbase_port, hbase_namespace, queue_partitions, queue_table_name,
-                 drop_all_tables=False, use_snappy=False, use_framed_compact=False):
+                 drop_all_tables=False, compression='NONE', use_framed_compact=False):
 
         self.logger = logging.getLogger("phoenix.feed")
         self._host = phx_host
@@ -1172,8 +1170,8 @@ class PhoenixFeed(Queue):
                                           queue_partitions,
                                           queue_table_name,
                                           drop_all_tables,
-                                          use_snappy,
-                                          use_framed_compact)
+                                          use_framed_compact,
+                                          compression)
 
     def frontier_start(self):
         pass
@@ -1323,7 +1321,7 @@ class PhoenixFeedBackend(PhoenixBackend):
                                   self._queue_partitions,
                                   settings.get('HBASE_QUEUE_TABLE'),
                                   settings.get('HBASE_DROP_ALL_TABLES'),
-                                  settings.get('HBASE_USE_SNAPPY'),
+                                  settings.get('HBASE_COMPRESSION'),
                                   settings.get('HBASE_USE_FRAMED_COMPACT'))
 
     @classmethod
