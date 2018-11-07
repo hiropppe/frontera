@@ -22,6 +22,7 @@ class BreadthFirstCrawlingStrategy(BaseCrawlingStrategy):
             if req.meta[b'state'] is States.NOT_CRAWLED:
                 req.meta[b'state'] = States.QUEUED
                 req.meta[b'depth'] = 0
+                req.meta[b'token'] = '0'
                 req.meta[b'strategy'] = {
                     b'name': self.name,
                     b'depth_limit': 0
@@ -48,23 +49,30 @@ class BreadthFirstCrawlingStrategy(BaseCrawlingStrategy):
         response.meta[b'state'] = States.CRAWLED
 
     def filter_extracted_links(self, request, links):
-        return links
+        depth_limit = request.meta[b'strategy'][b'depth_limit']
+        if depth_limit >= 0 and depth_limit < request.meta[b'depth'] + 1:
+            self.logger.info('Depth limit exceeded. {:s} (depth: {:d} > limit: {:d})'
+                             .format(request.url,
+                                     request.meta[b'depth'] + 1,
+                                     request.meta[b'strategy'][b'depth_limit']))
+            return []
 
-    def links_extracted(self, request, links):
-        for link in links:
+        def update(link):
             link.meta[b'depth'] = request.meta[b'depth'] + 1
             link.meta[b'strategy'] = request.meta[b'strategy']
             if b'seed_fingerprint' in request.meta:
                 link.meta[b'seed_fingerprint'] = request.meta[b'seed_fingerprint']
             else:
                 link.meta[b'seed_fingerprint'] = request.meta[b'fingerprint']
+            return True
+
+        return list(filter(update, links))
+
+    def links_extracted(self, request, links):
+        for link in links:
             if link.meta[b'state'] is States.NOT_CRAWLED:
                 link.meta[b'state'] = States.QUEUED
-                if link.meta[b'strategy'][b'depth_limit'] == 0 or link.meta[b'depth'] <= link.meta[b'strategy'][b'depth_limit']:
-                    self.schedule(link, self.get_score(link))
-                else:
-                    self.logger.info('Depth limit exceeded. {:s} (depth: {:d} > limit: {:d})'
-                                     .format(link.url, link.meta[b'depth'], link.meta[b'strategy'][b'depth_limit']))
+                self.schedule(link, self.get_score(link))
 
     def request_error(self, request, error):
         request.meta[b'state'] = States.ERROR

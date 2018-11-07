@@ -23,8 +23,9 @@ class DomainCrawlingStrategy(BaseCrawlingStrategy):
             if req.meta[b'state'] is States.NOT_CRAWLED:
                 req.meta[b'state'] = States.QUEUED
                 req.meta[b'depth'] = 0
+                req.meta[b'token'] = '0'
                 req.meta[b'strategy'] = {
-                    b'name': 'narrow',
+                    b'name': 'domain',
                     b'depth_limit': 0,
                     b'subdomain': True,
                     b'path_aware': False
@@ -50,8 +51,9 @@ class DomainCrawlingStrategy(BaseCrawlingStrategy):
                 req.meta[b'seed_fingerprint'] = req.meta[b'fingerprint']
                 req.meta[b'state'] = States.QUEUED
                 req.meta[b'depth'] = 0
+                req.meta[b'token'] = seeds.get('token', '0')
                 req.meta[b'strategy'] = {
-                    b'name': 'narrow',
+                    b'name': 'domain',
                     b'depth_limit': seeds.get('depth_limit', 0),
                     b'subdomain': subdomain,
                     b'path_aware': path_aware,
@@ -64,6 +66,14 @@ class DomainCrawlingStrategy(BaseCrawlingStrategy):
         response.meta[b'state'] = States.CRAWLED
 
     def filter_extracted_links(self, request, links):
+        depth_limit = request.meta[b'strategy'][b'depth_limit']
+        if depth_limit >= 0 and depth_limit < request.meta[b'depth'] + 1:
+            self.logger.info('Depth limit exceeded. {:s} (depth: {:d} > limit: {:d})'
+                             .format(request.url,
+                                     request.meta[b'depth'] + 1,
+                                     request.meta[b'strategy'][b'depth_limit']))
+            return []
+
         strategy = request.meta[b'strategy']
         req_domain = request.meta[b'domain']
 
@@ -72,6 +82,13 @@ class DomainCrawlingStrategy(BaseCrawlingStrategy):
             url_patterns.append(re.compile(url_pattern))
 
         def matches(link):
+            link.meta[b'depth'] = request.meta[b'depth'] + 1
+            link.meta[b'strategy'] = request.meta[b'strategy']
+            if b'seed_fingerprint' in request.meta:
+                link.meta[b'seed_fingerprint'] = request.meta[b'seed_fingerprint']
+            else:
+                link.meta[b'seed_fingerprint'] = request.meta[b'fingerprint']
+
             if url_patterns:
                 if any(url_pattern.fullmatch(link.url) for url_pattern in url_patterns):
                     return True
@@ -80,9 +97,9 @@ class DomainCrawlingStrategy(BaseCrawlingStrategy):
             else:
                 link_domain = link.meta[b'domain']
                 link_path = urlparse(link.url).path
-                if ((req_domain[b'name'] != link_domain[b'name']) or
-                        (strategy[b'path_aware'] and link_path.startswith(strategy[b'seed_path']) is False) or
-                        (strategy[b'subdomain'] and req_domain[b'subdomain'] != link_domain[b'subdomain'])):
+                if ((req_domain[b'name'] != link_domain[b'name'])
+                        or (strategy[b'path_aware'] and link_path.startswith(strategy[b'seed_path']) is False)
+                        or (strategy[b'subdomain'] and req_domain[b'subdomain'] != link_domain[b'subdomain'])):
                     return False
                 else:
                     return True
@@ -91,19 +108,9 @@ class DomainCrawlingStrategy(BaseCrawlingStrategy):
 
     def links_extracted(self, request, links):
         for link in links:
-            link.meta[b'depth'] = request.meta[b'depth'] + 1
-            link.meta[b'strategy'] = request.meta[b'strategy']
-            if b'seed_fingerprint' in request.meta:
-                link.meta[b'seed_fingerprint'] = request.meta[b'seed_fingerprint']
-            else:
-                link.meta[b'seed_fingerprint'] = request.meta[b'fingerprint']
             if link.meta[b'state'] is States.NOT_CRAWLED:
                 link.meta[b'state'] = States.QUEUED
-                if link.meta[b'strategy'][b'depth_limit'] == 0 or link.meta[b'depth'] <= link.meta[b'strategy'][b'depth_limit']:
-                    self.schedule(link, self.get_score(link))
-                else:
-                    self.logger.info('Depth limit exceeded. {:s} (depth: {:d} > limit: {:d})'
-                                     .format(link.url, link.meta[b'depth'], link.meta[b'strategy'][b'depth_limit']))
+                self.schedule(link, self.get_score(link))
 
     def request_error(self, request, error):
         request.meta[b'state'] = States.ERROR

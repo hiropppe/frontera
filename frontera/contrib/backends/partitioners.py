@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 from __future__ import absolute_import
 
+import logging
+
 from frontera.core.components import Partitioner
 from cityhash import CityHash64
 from frontera.utils.misc import get_crc32
@@ -47,12 +49,18 @@ class FastPassPartitioner(Partitioner):
 
     def __init__(self, delegate):
         self.delegate = delegate
+        self.logger = logging.getLogger("partitioner")
 
     def partition(self, key, partitions=None):
         if not partitions:
             partitions = self.partitions
-        score, key = key.split(b'_')
-        if float(score) >= 0.5:
+        try:
+            score, key = key.split(b'_')
+        except ValueError:
+            self.logger.error('Illegal key ' + key.decode())
+            return partitions[0]
+
+        if float(score) >= 0.5 or len(partitions) == 1:
             return partitions[0]
         idx = self.delegate.get_partition_idx(key, partitions[:-1])
         return partitions[idx + 1]

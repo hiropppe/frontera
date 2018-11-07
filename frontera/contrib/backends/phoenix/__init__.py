@@ -524,6 +524,7 @@ class PhoenixMetadata(Metadata):
                 "m:depth" UNSIGNED_SMALLINT,
                 "m:error" VARCHAR(100),
                 "m:created_at" UNSIGNED_LONG,
+                "m:fetched_at" UNSIGNED_LONG,
                 "c:content" VARBINARY
             )
             DATA_BLOCK_ENCODING='{data_block_encoding}',
@@ -536,6 +537,12 @@ class PhoenixMetadata(Metadata):
 
         self._DDL_IDX_DOMAIN = """
             CREATE INDEX IDX_DOMAIN ON {table} ("m:domain") ASYNC
+            DATA_BLOCK_ENCODING='{data_block_encoding}', COMPRESSION='{compression}'
+        """.format(table=self._table_name,
+                   data_block_encoding=data_block_encoding,
+                   compression=compression)
+        self._DDL_IDX_NETCLOC = """
+            CREATE INDEX IDX_NETLOC ON {table} ("m:netloc") ASYNC
             DATA_BLOCK_ENCODING='{data_block_encoding}', COMPRESSION='{compression}'
         """.format(table=self._table_name,
                    data_block_encoding=data_block_encoding,
@@ -558,6 +565,12 @@ class PhoenixMetadata(Metadata):
         """.format(table=self._table_name,
                    data_block_encoding=data_block_encoding,
                    compression=compression)
+        self._DDL_IDX_FETCHED_AT = """
+            CREATE INDEX IDX_FETCHED_AT ON {table} ("m:fetched_at") ASYNC
+            DATA_BLOCK_ENCODING='{data_block_encoding}', COMPRESSION='{compression}'
+        """.format(table=self._table_name,
+                   data_block_encoding=data_block_encoding,
+                   compression=compression)
 
         self.SQL_ADD_SEED = """
             UPSERT INTO {table} (
@@ -565,16 +578,17 @@ class PhoenixMetadata(Metadata):
                 "m:url",
                 "m:domain",
                 "m:netloc",
-                "m:created_at")
+                "m:created_at",
+                "m:depth")
             VALUES
-                (?, ?, ?, ?, ?)
+                (?, ?, ?, ?, ?, ?)
         """.format(table=self._table_name)
 
         self.SQL_ADD_REDIRECT = """
             UPSERT INTO {table}
-                (URL_FPRINT, "m:url", "m:created_at", "m:dest_fprint")
+                (URL_FPRINT, "m:url", "m:created_at", "m:dest_fprint", "m:depth")
             VALUES
-                (?, ?, ?, ?)
+                (?, ?, ?, ?, ?)
         """.format(table=self._table_name)
 
         self.SQL_PAGE_CRAWLED = """
@@ -584,6 +598,7 @@ class PhoenixMetadata(Metadata):
                  "m:domain",
                  "m:netloc",
                  "m:created_at",
+                 "m:fetched_at",
                  "m:status_code",
                  "m:content_type",
                  "m:charset",
@@ -594,14 +609,39 @@ class PhoenixMetadata(Metadata):
                  "m:depth",
                  "c:content")
             VALUES
-                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """.format(table=self._table_name)
+
+        self.SQL_PAGE_CRAWLED_UPDATE = """
+            UPSERT INTO {table} (
+                 URL_FPRINT,
+                 "m:fetched_at",
+                 "m:status_code",
+                 "m:content_type",
+                 "m:charset",
+                 "m:headers",
+                 "m:signature",
+                 "m:title",
+                 "m:seed_fprint",
+                 "m:depth",
+                 "c:content")
+            VALUES
+                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """.format(table=self._table_name)
 
         self.SQL_REQUEST_ERROR = """
             UPSERT INTO {table}
-                (url_fprint, "m:url", "m:created_at", "m:error")
+                (url_fprint, "m:url", "m:created_at", "m:depth", "m:error")
             VALUES
-                (?, ?, ?, ?)
+                (?, ?, ?, ?, ?)
+        """.format(table=self._table_name)
+
+        self.SQL_GET_FOR_UPDATE_CONTENT = """
+            SELECT URL_FPRINT, "m:signature" FROM {table} WHERE URL_FPRINT = ?
+        """.format(table=self._table_name)
+
+        self.SQL_GET_FOR_UPDATE = """
+            SELECT URL_FPRINT FROM {table} WHERE URL_FPRINT = ?
         """.format(table=self._table_name)
 
         conn = connect(self._host, self._port, self._schema)
@@ -624,9 +664,11 @@ class PhoenixMetadata(Metadata):
                 try:
                     cursor.execute(self._DDL)
                     cursor.execute(self._DDL_IDX_DOMAIN)
+                    cursor.execute(self._DDL_IDX_NETCLOC)
                     cursor.execute(self._DDL_IDX_SEED_FPRINT)
                     cursor.execute(self._DDL_IDX_STATUS_CODE)
                     cursor.execute(self._DDL_IDX_CREATED_AT)
+                    cursor.execute(self._DDL_IDX_FETCHED_AT)
                 except:
                     err, msg, _ = sys.exc_info()
                     self.logger.error("{} {}\n".format(err, msg))
@@ -643,6 +685,8 @@ class PhoenixMetadata(Metadata):
         pass
 
     def add_seeds(self, seeds):
+        pass
+        """
         conn = connect(self._host, self._port, self._schema)
         try:
             cursor = conn.cursor()
@@ -659,13 +703,14 @@ class PhoenixMetadata(Metadata):
                           ))
         finally:
             conn.close()
+        """
 
     def page_crawled(self, response):
         fprint = response.meta[b'fingerprint']
         url = norm_url(response.url)
         domain = response.meta[b'domain'][b'name']
         netloc = response.meta[b'domain'][b'netloc']
-        created_at = int(time())
+        now = int(time())
         headers = response.headers
         content_type = headers[b'Content-Type'][0] if b'Content-Type' in headers else None
         ctype = None
@@ -679,11 +724,6 @@ class PhoenixMetadata(Metadata):
                 charset = charsets[0].lower()
 
         title = response.meta[b'title'] if b'title' in response.meta else None
-        #body = response.body
-        #if any(e in content_type.lower() for e in ('utf8', 'utf-8')):
-        #    body = body.decode('utf8')
-        #elif any(e in content_type.lower() for e in ('sjis', 'shift-jis', 'shift_jis'))::
-        #    body = body.decode('sjis')
         signature = self.md5(response.body)
         redirect_urls = response.request.meta.get(b'redirect_urls')
         redirect_fprints = response.request.meta.get(b'redirect_fingerprints')
@@ -691,38 +731,67 @@ class PhoenixMetadata(Metadata):
         conn = connect(self._host, self._port, self._schema)
         try:
             cursor = conn.cursor()
-            if redirect_urls:
-                for url, fprint in zip(redirect_urls, redirect_fprints):
-                    self._op(2, cursor.execute, self.SQL_ADD_REDIRECT,
-                             (fprint,
-                              norm_url(url),
-                              int(time()),
-                              redirect_fprints[-1]))
 
-            try:
-                self._op(2, cursor.execute, self.SQL_PAGE_CRAWLED,
-                         (fprint,
-                          url,
-                          domain,
-                          netloc,
-                          created_at,
-                          int(response.status_code),
-                          ctype,
-                          charset,
-                          packb(headers),
-                          signature,
-                          title,
-                          response.meta[b'seed_fingerprint'],
-                          response.meta[b'depth'],
-                          response.body))
-            except ValueError:
-                self.logger.error("Failed to persist fetched data. fprint={}, url={}".format(fprint, url))
-                err, msg, _ = sys.exc_info()
-                self.logger.error("{} {}\n".format(err, msg))
+            self._op(2, cursor.execute, self.SQL_GET_FOR_UPDATE_CONTENT, (fprint,))
+            data = cursor.fetchone()
+            if data:
+                if data[1] != signature:
+                    try:
+                        self._op(2, cursor.execute, self.SQL_PAGE_CRAWLED_UPDATE,
+                                 (fprint,
+                                  now,
+                                  int(response.status_code),
+                                  ctype,
+                                  charset,
+                                  packb(headers),
+                                  signature,
+                                  title,
+                                  response.meta[b'seed_fingerprint'],
+                                  response.meta[b'depth'],
+                                  response.body))
+                    except ValueError:
+                        self.logger.error("Failed to persist (update) fetched data. fprint={}, url={}".format(fprint, url))
+                        err, msg, _ = sys.exc_info()
+                        self.logger.error("{} {}\n".format(err, msg))
+            else:
+                # tentatively insert only first time.
+                if redirect_urls:
+                    for url, fprint in zip(redirect_urls, redirect_fprints):
+                        self._op(2, cursor.execute, self.SQL_ADD_REDIRECT,
+                                 (fprint,
+                                  norm_url(url),
+                                  int(time()),
+                                  redirect_fprints[-1],
+                                  response.meta[b'depth']))
+                try:
+                    self._op(2, cursor.execute, self.SQL_PAGE_CRAWLED,
+                             (fprint,
+                              url,
+                              domain,
+                              netloc,
+                              now,
+                              now,
+                              int(response.status_code),
+                              ctype,
+                              charset,
+                              packb(headers),
+                              signature,
+                              title,
+                              response.meta[b'seed_fingerprint'],
+                              response.meta[b'depth'],
+                              response.body))
+                except ValueError:
+                    self.logger.error("Failed to persist (insert) fetched data. fprint={}, url={}".format(fprint, url))
+                    err, msg, _ = sys.exc_info()
+                    self.logger.error("{} {}\n".format(err, msg))
+
         finally:
             conn.close()
 
     def links_extracted(self, request, links):
+        if request.meta[b'strategy'][b'depth_limit'] < request.meta[b'depth'] + 1:
+            return
+
         conn = connect(self._host, self._port, self._schema)
         try:
             cursor = conn.cursor()
@@ -730,15 +799,15 @@ class PhoenixMetadata(Metadata):
             for link in links:
                 links_dict[link.meta[b'fingerprint']] = (link, link.url, link.meta[b'domain'])
             for link_fingerprint, (link, link_url, link_domain) in six.iteritems(links_dict):
-                self._op(2, cursor.execute, self.SQL_ADD_SEED,
-                         (link_fingerprint,
-                          norm_url(link_url),
-                          link_domain[b'name'],
-                          link_domain[b'netloc'],
-                          int(time()),
-                          link_domain[b'fingerprint'],
-                          link.meta.get(b'seed_fingerprint', None),
-                          link.meta.get(b'depth', None)))
+                self._op(2, cursor.execute, self.SQL_GET_FOR_UPDATE, (link_fingerprint,))
+                if not cursor.fetchone():
+                    self._op(2, cursor.execute, self.SQL_ADD_SEED,
+                             (link_fingerprint,
+                              norm_url(link_url),
+                              link_domain[b'name'],
+                              link_domain[b'netloc'],
+                              int(time()),
+                              request.meta[b'depth'] + 1))
         finally:
             conn.close()
 
@@ -746,19 +815,22 @@ class PhoenixMetadata(Metadata):
         conn = connect(self._host, self._port, self._schema)
         try:
             cursor = conn.cursor()
-            self._op(2, cursor.execute, self.SQL_REQUEST_ERROR,
-                     (request.meta[b'fingerprint'],
-                      norm_url(request.url),
-                      int(time()),
-                      error,
-                      request.meta[b'domain'][b'fingerprint']))
-            if b'redirect_urls' in request.meta:
-                for url, fprint in zip(request.meta[b'redirect_urls'], request.meta[b'redirect_fingerprints']):
-                    self._op(2, cursor.execute, self.SQL_ADD_REDIRECT,
-                             (fprint,
-                              norm_url(url),
-                              int(time()),
-                              request.meta[b'redirect_fingerprints'][-1]))
+            self._op(2, cursor.execute, self.SQL_GET_FOR_UPDATE, (request.meta[b'fingerprint'],))
+            if not cursor.fetchone():
+                self._op(2, cursor.execute, self.SQL_REQUEST_ERROR,
+                         (request.meta[b'fingerprint'],
+                          norm_url(request.url),
+                          int(time()),
+                          request.meta[b'depth'] + 1,
+                          error))
+                if b'redirect_urls' in request.meta:
+                    for url, fprint in zip(request.meta[b'redirect_urls'], request.meta[b'redirect_fingerprints']):
+                        self._op(2, cursor.execute, self.SQL_ADD_REDIRECT,
+                                 (fprint,
+                                  norm_url(url),
+                                  int(time()),
+                                  request.meta[b'redirect_fingerprints'][-1],
+                                  request.meta[b'depth'] + 1))
         finally:
             conn.close()
 
@@ -1205,7 +1277,10 @@ class PhoenixFeed(Queue):
                 fingerprint = request.meta[b'fingerprint']
                 crontab = request.meta[b'strategy'][b'crontab']
                 depth_limit = request.meta[b'strategy'][b'depth_limit']
-                next_time = timestamp + int(CronTab(crontab).next())
+                if b'token' in request.meta:
+                    next_time = timestamp
+                else:
+                    next_time = timestamp + int(CronTab(crontab).next())
                 slot = request.meta.get(b'slot')
                 if slot is not None:
                     partition_id = self.feed_partitioner.partition(slot, self.feed_partitions)
