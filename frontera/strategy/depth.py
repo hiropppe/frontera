@@ -13,6 +13,7 @@ class BreadthFirstCrawlingStrategy(BaseCrawlingStrategy):
         super(BreadthFirstCrawlingStrategy, self).__init__(manager, args, scheduled_stream, states_context)
         self.logger = logging.getLogger('strategy.bfs')
         self.name = 'bfs'
+        self.fastpass_score_threshold = manager.settings.get('QUEUE_FASTPASS_SCORE_THRESHOLD')
 
     def read_seeds(self, fh):
         for url in fh:
@@ -72,7 +73,13 @@ class BreadthFirstCrawlingStrategy(BaseCrawlingStrategy):
         for link in links:
             if link.meta[b'state'] is States.NOT_CRAWLED:
                 link.meta[b'state'] = States.QUEUED
-                self.schedule(link, self.get_score(link))
+                score = self.get_score(link)
+                if self.fastpass_score_threshold > 0.0 and score >= self.fastpass_score_threshold:
+                    self.logger.info('Assign slot 0 {:s} (score: {:s})'.format(link.url, str(score)))
+                    link.meta[b'slot'] = 0
+                self.schedule(link, score)
+            else:
+                self.logger.info('Link already crawled or queued ({:s}) {:s}'.format(str(link.meta[b'state']), link.url))
 
     def request_error(self, request, error):
         request.meta[b'state'] = States.ERROR

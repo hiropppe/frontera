@@ -183,9 +183,9 @@ class HBaseQueue(Queue):
             domain = request.meta[b'domain']
             fingerprint = request.meta[b'fingerprint']
             slot = request.meta.get(b'slot')
-            if slot is not None:
-                partition_id = self.partitioner.partition(slot, self.partitions)
-                key_crc32 = get_crc32(slot)
+            if slot is not None and type(domain) == dict:
+                partition_id = slot
+                key_crc32 = get_crc32(domain[b'name'])
             elif type(domain) == dict:
                 partition_id = self.partitioner.partition(domain[b'name'], self.partitions)
                 key_crc32 = get_crc32(domain[b'name'])
@@ -278,8 +278,8 @@ class HBaseQueue(Queue):
             while tries < self.GET_RETRIES:
                 tries += 1
                 limit *= 5.5 if tries > 1 else 1.0
-                self.logger.debug("Try %d, limit %d, last attempt: requests %d, hosts %d",
-                                  tries, limit, count, len(queue.keys()))
+                self.logger.info("Try %d, limit %d, last attempt: requests %d, hosts %d, prefix %s",
+                                  tries, limit, count, len(queue.keys()), prefix)
                 meta_map.clear()
                 queue.clear()
                 count = 0
@@ -318,7 +318,7 @@ class HBaseQueue(Queue):
                     continue
                 break
 
-            self.logger.debug("Finished: tries %d, hosts %d, requests %d", tries, len(queue.keys()), count)
+            self.logger.info("Finished: tries %d, hosts %d, requests %d", tries, len(queue.keys()), count)
 
             # For every fingerprint collect it's row keys and return all fingerprints from them
             fprint_map = {}
@@ -736,6 +736,7 @@ class PhoenixMetadata(Metadata):
             data = cursor.fetchone()
             if data:
                 if data[1] != signature:
+                    self.logger.info('Crawled (update) {}'.format(url))
                     try:
                         self._op(2, cursor.execute, self.SQL_PAGE_CRAWLED_UPDATE,
                                  (fprint,
@@ -753,7 +754,10 @@ class PhoenixMetadata(Metadata):
                         self.logger.error("Failed to persist (update) fetched data. fprint={}, url={}".format(fprint, url))
                         err, msg, _ = sys.exc_info()
                         self.logger.error("{} {}\n".format(err, msg))
+                else:
+                    self.logger.info('Crawled (ignore) {}'.format(url))
             else:
+                self.logger.info('Crawled (new) {}'.format(url))
                 # tentatively insert only first time.
                 if redirect_urls:
                     for url, fprint in zip(redirect_urls, redirect_fprints):

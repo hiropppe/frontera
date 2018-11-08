@@ -47,8 +47,9 @@ class FingerprintPartitioner(Partitioner):
 
 class FastPassPartitioner(Partitioner):
 
-    def __init__(self, delegate):
+    def __init__(self, delegate, fastpass_score_threshold):
         self.delegate = delegate
+        self.fastpass_score_threshold = fastpass_score_threshold
         self.logger = logging.getLogger("partitioner")
 
     def partition(self, key, partitions=None):
@@ -60,7 +61,7 @@ class FastPassPartitioner(Partitioner):
             self.logger.error('Illegal key ' + key.decode())
             return partitions[0]
 
-        if float(score) >= 0.5 or len(partitions) == 1:
+        if float(score) >= self.fastpass_score_threshold or len(partitions) == 1:
             return partitions[0]
         idx = self.delegate.get_partition_idx(key, partitions[:-1])
         return partitions[idx + 1]

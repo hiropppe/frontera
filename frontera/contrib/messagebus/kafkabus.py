@@ -197,14 +197,17 @@ class SpiderFeedStream(BaseSpiderFeedStream):
         lags = self._offset_fetcher.get()
         for partition, lag in six.iteritems(lags):
             if lag < self._max_next_requests:
+                logger.info('{:d} lag for MAX_NEXT_REQUEST ({:d})'.format(lag, self._max_next_requests))
                 partitions.append(partition)
+            else:
+                logger.warn('lag exceeds MAX_NEXT_REQUEST {:d} >= {:d}'.format(lag, self._max_next_requests))
         return partitions
 
     def producer(self):
         partitioner = Crc32NamePartitioner(self._partitions) if self._hostname_partitioning \
             else FingerprintPartitioner(self._partitions)
         if self._fastpass_score_threshold > 0.0:
-            partitioner = FastPassPartitioner(partitioner)
+            partitioner = FastPassPartitioner(partitioner, self._fastpass_score_threshold)
         return KeyedProducer(self._location, self._enable_ssl, self._cert_path, self._topic, partitioner, self._codec,
                              batch_size=DEFAULT_BATCH_SIZE,
                              buffer_memory=DEFAULT_BUFFER_MEMORY)
