@@ -111,11 +111,12 @@ class SimpleProducer(BaseStreamProducer):
 
 
 class KeyedProducer(BaseStreamProducer):
-    def __init__(self, location, enable_ssl, cert_path, topic_done, partitioner, compression, **kwargs):
+    def __init__(self, location, enable_ssl, cert_path, topic_done, partitioner, compression, partition_id=None, **kwargs):
         self._location = location
         self._topic_done = topic_done
         self._partitioner = partitioner
         self._compression = compression
+        self._partition_id = partition_id
         max_request_size = kwargs.pop('max_request_size', DEFAULT_MAX_REQUEST_SIZE)
         kwargs.update(_prepare_kafka_ssl_kwargs(cert_path) if enable_ssl else {})
         self._producer = KafkaProducer(bootstrap_servers=self._location,
@@ -127,7 +128,7 @@ class KeyedProducer(BaseStreamProducer):
 
     def send(self, key, *messages):
         for msg in messages:
-            self._producer.send(self._topic_done, key=key, value=msg)
+            self._producer.send(self._topic_done, key=key, value=msg, partition=self._partition_id)
 
     def flush(self):
         self._producer.flush()
@@ -146,10 +147,15 @@ class SpiderLogStream(BaseSpiderLogStream):
         self._partitions = messagebus.spider_log_partitions
         self._enable_ssl = messagebus.enable_ssl
         self._cert_path = messagebus.cert_path
+        if messagebus.spider_log_partition_id:
+            self._spider_log_partition_id = int(messagebus.spider_log_partition_id)
+        else:
+            self._spider_log_partition_id = None
 
     def producer(self):
         return KeyedProducer(self._location, self._enable_ssl, self._cert_path, self._topic,
                              FingerprintPartitioner(self._partitions), self._codec,
+                             partition_id=self._spider_log_partition_id,
                              batch_size=DEFAULT_BATCH_SIZE,
                              buffer_memory=DEFAULT_BUFFER_MEMORY)
 
@@ -265,6 +271,7 @@ class MessageBus(BaseMessageBus):
         self.spider_log_partitions = settings.get('SPIDER_LOG_PARTITIONS')
         self.spider_feed_partitions = settings.get('SPIDER_FEED_PARTITIONS')
         self.fastpass_score_threshold = settings.get('QUEUE_FASTPASS_SCORE_THRESHOLD')
+        self.spider_log_partition_id = settings.get('SPIDER_LOG_PARTITION_ID')
 
     def spider_log(self):
         return SpiderLogStream(self)
