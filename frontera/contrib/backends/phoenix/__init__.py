@@ -906,7 +906,7 @@ class PhoenixSeed(Seed):
 
         self._SQL_ADD_SEED = """
             UPSERT INTO {table}
-                (uid, url_fprint, "s:url", "s:domain", "s:netloc", "s:strategy", "s:depth_limit", "s:partition_id", "s:token", "s:created_at")
+                ("uid", "url_fprint", "s:url", "s:domain", "s:netloc", "s:strategy", "s:depth_limit", "s:partition_id", "s:token", "s:created_at")
             VALUES
                 (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """.format(table=self._table_name)
