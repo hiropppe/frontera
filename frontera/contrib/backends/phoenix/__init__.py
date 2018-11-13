@@ -884,7 +884,8 @@ class PhoenixSeed(Seed):
         self._table_name = table_name.upper()
         self._DDL = """
             CREATE TABLE {table} (
-                URL_FPRINT VARCHAR(40) PRIMARY KEY,
+                "uid" UNSIGNED_SMALLINT NOT NULL,
+                "url_fprint" VARCHAR(40) NOT NULL,
                 "s:url" VARCHAR,
                 "s:domain" VARCHAR(100),
                 "s:netloc" VARCHAR(100),
@@ -893,6 +894,7 @@ class PhoenixSeed(Seed):
                 "s:partition_id" UNSIGNED_TINYINT,
                 "s:token" VARCHAR(64),
                 "s:created_at" UNSIGNED_LONG
+                CONSTRAINT pk PRIMARY KEY ("uid", "url_fprint")
             )
             DATA_BLOCK_ENCODING='{data_block_encoding}',
             COMPRESSION='{compression}',
@@ -904,9 +906,9 @@ class PhoenixSeed(Seed):
 
         self._SQL_ADD_SEED = """
             UPSERT INTO {table}
-                (url_fprint, "s:url", "s:domain", "s:netloc", "s:strategy", "s:depth_limit", "s:partition_id", "s:token", "s:created_at")
+                (uid, url_fprint, "s:url", "s:domain", "s:netloc", "s:strategy", "s:depth_limit", "s:partition_id", "s:token", "s:created_at")
             VALUES
-                (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """.format(table=self._table_name)
 
         self.seed_partitions = [i for i in range(0, seed_partitions)]
@@ -947,6 +949,7 @@ class PhoenixSeed(Seed):
 
             now = int(time())
             for fprint, _, request, _ in batch:
+                uid = request.meta[b'uid']
                 url = norm_url(request.url)
                 domain = request.meta[b'domain']
                 strategy = request.meta[b'strategy'][b'name']
@@ -963,7 +966,8 @@ class PhoenixSeed(Seed):
                     raise TypeError("partitioning key and info isn't provided")
 
                 self._op(2, cursor.execute, self._SQL_ADD_SEED,
-                         (fprint,
+                         (uid,
+                          fprint,
                           url,
                           domain[b'name'],
                           domain[b'netloc'],
