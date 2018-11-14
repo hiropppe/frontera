@@ -49,7 +49,7 @@ class DomainCrawlingStrategy(BaseCrawlingStrategy):
             req = self.create_request(url)
             self.refresh_states(req)
             if req.meta[b'state'] is States.NOT_CRAWLED:
-                req.meta[b'uid'] = req.meta[b'uid']
+                req.meta[b'uid'] = seeds.get(b'uid')
                 req.meta[b'seed_fingerprint'] = req.meta[b'fingerprint']
                 req.meta[b'state'] = States.QUEUED
                 req.meta[b'depth'] = 0
