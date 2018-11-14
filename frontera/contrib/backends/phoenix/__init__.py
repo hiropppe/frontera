@@ -905,7 +905,7 @@ class PhoenixSeed(Seed):
         """.format(table=self._table_name,
                    data_block_encoding=data_block_encoding,
                    compression=compression,
-                   versions=1)
+                   versions=100)
 
         self._SQL_ADD_SEED = """
             UPSERT INTO {table}
