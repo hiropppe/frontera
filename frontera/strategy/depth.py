@@ -79,8 +79,8 @@ class BreadthFirstCrawlingStrategy(BaseCrawlingStrategy):
                     self.logger.info('Assign slot 0 {:s} (score: {:s})'.format(link.url, str(score)))
                     link.meta[b'slot'] = 0
                 self.schedule(link, score)
-            else:
-                self.logger.info('Link already crawled or queued ({:s}) {:s}'.format(str(link.meta[b'state']), link.url))
+            #else:
+            #    self.logger.info('Link already crawled or queued ({:s}) {:s}'.format(str(link.meta[b'state']), link.url))
 
     def request_error(self, request, error):
         request.meta[b'state'] = States.ERROR

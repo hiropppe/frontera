@@ -736,7 +736,7 @@ class PhoenixMetadata(Metadata):
             data = cursor.fetchone()
             if data:
                 if data[1] != signature:
-                    self.logger.info('Crawled (update) {}'.format(url))
+                    self.logger.info('Crawled (update) {} (depth: {:d})'.format(url, response.meta[b'depth']))
                     try:
                         self._op(2, cursor.execute, self.SQL_PAGE_CRAWLED_UPDATE,
                                  (fprint,
@@ -755,9 +755,9 @@ class PhoenixMetadata(Metadata):
                         err, msg, _ = sys.exc_info()
                         self.logger.error("{} {}\n".format(err, msg))
                 else:
-                    self.logger.info('Crawled (ignore) {}'.format(url))
+                    self.logger.info('Crawled (ignore) {} (depth: {:d})'.format(url, response.meta[b'depth']))
             else:
-                self.logger.info('Crawled (new) {}'.format(url))
+                self.logger.info('Crawled (new) {} (depth: {:d})'.format(url, response.meta[b'depth']))
                 # tentatively insert only first time.
                 if redirect_urls:
                     for url, fprint in zip(redirect_urls, redirect_fprints):
@@ -793,6 +793,7 @@ class PhoenixMetadata(Metadata):
             conn.close()
 
     def links_extracted(self, request, links):
+        """
         if request.meta[b'strategy'][b'depth_limit'] < request.meta[b'depth'] + 1:
             return
 
@@ -814,6 +815,8 @@ class PhoenixMetadata(Metadata):
                               request.meta[b'depth'] + 1))
         finally:
             conn.close()
+        """
+        pass
 
     def request_error(self, request, error):
         conn = connect(self._host, self._port, self._schema)
