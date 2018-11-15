@@ -1253,8 +1253,8 @@ class PhoenixFeed(Queue):
                                           queue_partitions,
                                           queue_table_name,
                                           drop_all_tables,
-                                          use_framed_compact,
-                                          compression)
+                                          compression,
+                                          use_framed_compact)
 
     def frontier_start(self):
         pass
