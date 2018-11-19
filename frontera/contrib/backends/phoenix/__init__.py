@@ -536,31 +536,31 @@ class PhoenixMetadata(Metadata):
                    versions=2147483647)
 
         self._DDL_IDX_DOMAIN = """
-            CREATE LOCAL INDEX IDX_DOMAIN ON {table} ("m:domain") ASYNC
+            CREATE LOCAL INDEX IDX_DOMAIN ON {table} ("m:domain")
             DATA_BLOCK_ENCODING='{data_block_encoding}', COMPRESSION='{compression}'
         """.format(table=self._table_name,
                    data_block_encoding=data_block_encoding,
                    compression=compression)
         self._DDL_IDX_NETCLOC = """
-            CREATE LOCAL INDEX IDX_NETLOC ON {table} ("m:netloc") ASYNC
+            CREATE LOCAL INDEX IDX_NETLOC ON {table} ("m:netloc")
             DATA_BLOCK_ENCODING='{data_block_encoding}', COMPRESSION='{compression}'
         """.format(table=self._table_name,
                    data_block_encoding=data_block_encoding,
                    compression=compression)
         self._DDL_IDX_SEED_FPRINT = """
-            CREATE LOCAL INDEX IDX_SEED_FPRINT ON {table} ("m:seed_fprint") ASYNC
+            CREATE LOCAL INDEX IDX_SEED_FPRINT ON {table} ("m:seed_fprint")
             DATA_BLOCK_ENCODING='{data_block_encoding}', COMPRESSION='{compression}'
         """.format(table=self._table_name,
                    data_block_encoding=data_block_encoding,
                    compression=compression)
         self._DDL_IDX_STATUS_CODE = """
-            CREATE LOCAL INDEX IDX_STATUS_CODE ON {table} ("m:status_code") ASYNC
+            CREATE LOCAL INDEX IDX_STATUS_CODE ON {table} ("m:status_code")
             DATA_BLOCK_ENCODING='{data_block_encoding}', COMPRESSION='{compression}'
         """.format(table=self._table_name,
                    data_block_encoding=data_block_encoding,
                    compression=compression)
         self._DDL_IDX_FETCHED_AT = """
-            CREATE LOCAL INDEX IDX_FETCHED_AT ON {table} ("m:fetched_at") ASYNC
+            CREATE LOCAL INDEX IDX_FETCHED_AT ON {table} ("m:fetched_at")
             DATA_BLOCK_ENCODING='{data_block_encoding}', COMPRESSION='{compression}'
         """.format(table=self._table_name,
                    data_block_encoding=data_block_encoding,
