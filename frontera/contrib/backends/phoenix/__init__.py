@@ -894,6 +894,9 @@ class PhoenixSeed(Seed):
                 "s:netloc" VARCHAR(100),
                 "s:strategy" VARCHAR(30),
                 "s:depth_limit" UNSIGNED_SMALLINT,
+                "s:subdomain_aware" BOOLEAN,
+                "s:path_aware" BOOLEAN,
+                "s:crontab" VARCHAR,
                 "s:partition_id" UNSIGNED_TINYINT,
                 "s:token" VARCHAR(64),
                 "s:created_at" UNSIGNED_LONG
@@ -909,9 +912,9 @@ class PhoenixSeed(Seed):
 
         self._SQL_ADD_SEED = """
             UPSERT INTO {table}
-                ("uid", "url_fprint", "s:url", "s:domain", "s:netloc", "s:strategy", "s:depth_limit", "s:partition_id", "s:token", "s:created_at")
+                ("uid", "url_fprint", "s:url", "s:domain", "s:netloc", "s:strategy", "s:depth_limit", "s:subdomain_aware", "s:path_aware", "s:crontab", "s:partition_id", "s:token", "s:created_at")
             VALUES
-                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """.format(table=self._table_name)
 
         self.seed_partitions = [i for i in range(0, seed_partitions)]
@@ -957,6 +960,9 @@ class PhoenixSeed(Seed):
                 domain = request.meta[b'domain']
                 strategy = request.meta[b'strategy'][b'name']
                 depth_limit = request.meta[b'strategy'][b'depth_limit']
+                subdomain_aware = request.meta[b'strategy'].get(b'subdomain_aware', False)
+                path_aware = request.meta[b'strategy'].get(b'path_aware', False)
+                crontab = request.meta[b'strategy'].get(b'crontab', None)
                 token = request.meta[b'token']
                 slot = request.meta.get(b'slot')
                 if slot is not None:
@@ -976,6 +982,9 @@ class PhoenixSeed(Seed):
                           domain[b'netloc'],
                           strategy,
                           depth_limit,
+                          subdomain_aware,
+                          path_aware,
+                          crontab,
                           partition_id,
                           token,
                           now))
