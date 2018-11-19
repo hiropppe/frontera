@@ -953,7 +953,7 @@ class PhoenixSeed(Seed):
                 domain = request.meta[b'domain']
                 strategy = request.meta[b'strategy'][b'name']
                 depth_limit = request.meta[b'strategy'][b'depth_limit']
-                subdomain_aware = request.meta[b'strategy'].get(b'subdomain_aware', False)
+                subdomain_aware = request.meta[b'strategy'].get(b'subdomain', False)
                 path_aware = request.meta[b'strategy'].get(b'path_aware', False)
                 crontab = request.meta[b'strategy'].get(b'crontab', None)
                 token = request.meta[b'token']
