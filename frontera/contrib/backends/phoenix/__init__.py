@@ -728,6 +728,8 @@ class PhoenixMetadata(Metadata):
             self._op(2, cursor.execute, self.SQL_GET_FOR_UPDATE_CONTENT, (fprint,))
             data = cursor.fetchone()
             if data:
+                pass
+                """
                 if data[1] != signature:
                     self.logger.info('Crawled (update) {} (depth: {:d})'.format(url, response.meta[b'depth']))
                     try:
@@ -749,6 +751,7 @@ class PhoenixMetadata(Metadata):
                         self.logger.error("{} {}\n".format(err, msg))
                 else:
                     self.logger.info('Crawled (ignore) {} (depth: {:d})'.format(url, response.meta[b'depth']))
+                """
             else:
                 self.logger.info('Crawled (new) {} (depth: {:d})'.format(url, response.meta[b'depth']))
                 # tentatively insert only first time.
