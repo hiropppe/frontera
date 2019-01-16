@@ -815,6 +815,7 @@ class PhoenixMetadata(Metadata):
         pass
 
     def request_error(self, request, error):
+        """
         conn = connect(self._host, self._port, self._schema)
         try:
             cursor = conn.cursor()
@@ -836,6 +837,8 @@ class PhoenixMetadata(Metadata):
                                   request.meta[b'depth'] + 1))
         finally:
             conn.close()
+        """
+        pass
 
     def update_score(self, batch):
         # never called ?
