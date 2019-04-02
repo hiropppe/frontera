@@ -533,7 +533,7 @@ class PhoenixMetadata(Metadata):
         """.format(table=self._table_name,
                    data_block_encoding=data_block_encoding,
                    compression=compression,
-                   versions=2147483647)
+                   versions=10)
 
         self._DDL_IDX_DOMAIN = """
             CREATE LOCAL INDEX IDX_DOMAIN ON {table} ("m:domain")
